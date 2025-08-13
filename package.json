@@ -1,0 +1,18 @@
+{
+  "name": "companion-app-topin",
+  "version": "0.1.0",
+  "description": "Minimal cross-platform companion app (Electron v28)",
+  "main": "main.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "dependencies": {
+    "systeminformation": "^5.21.23"
+  },
+  "devDependencies": {
+    "electron": "28.0.0"
+  }
+} 

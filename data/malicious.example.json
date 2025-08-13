@@ -1,0 +1,6 @@
+{
+  "processNames": ["teamviewer", "anydesk", "chrome-remote-desktop"],
+  "ports": ["3478", "5938"],
+  "domains": ["webrtc.example.com", "malicious.example"],
+  "packages": ["com.remote.control", "org.bad.actor"]
+} 

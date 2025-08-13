@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Companion App</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="title">
+      <img src="icon.svg" alt="App" class="logo" />
+      <h1>Companion</h1>
+    </div>
+    <div class="actions">
+      <button id="scanBtn" class="btn primary">Scan Now</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <h2>System Check</h2>
+      <div id="globalStatus" class="badge">Idle</div>
+      <p class="muted" id="globalHint">Click Scan Now to run notifications check and system scan.</p>
+    </section>
+
+    <section class="card">
+      <h2>Details</h2>
+      <div class="grid">
+        <div>
+          <h3>Notifications</h3>
+          <div class="row"><span id="notifStatus" class="badge">Unknown</span></div>
+          <div id="notifAudit" class="muted" style="margin-top:8px"></div>
+        </div>
+        <div>
+          <h3>Suspicious</h3>
+          <ul id="suspiciousList" class="list"></ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>v0.1.0 • Electron 28</span>
+  </footer>
+
+  <script src="renderer.js"></script>
+</body>
+</html> 
