@@ -132,4 +132,46 @@ ipcMain.handle('app:scan', async () => {
   } catch (e) {
     return { ok: false, error: String(e) };
   }
+});
+
+// Auto-scan worker (Node worker thread) to keep main thread responsive
+const { Worker } = require('worker_threads');
+let autoScanWorker = null;
+
+function startAutoScanWorker(intervalMs = 30000) {
+  if (autoScanWorker) return true;
+  const workerPath = path.join(__dirname, 'workers', 'autoScanWorker.js');
+  autoScanWorker = new Worker(workerPath, {
+    workerData: null
+  });
+  autoScanWorker.on('message', (msg) => {
+    if (!msg) return;
+    if (msg.type === 'result' && mainWindow && !mainWindow.isDestroyed()) {
+      try { mainWindow.webContents.send('app:autoScanResult', msg.payload); } catch {}
+    }
+  });
+  autoScanWorker.on('error', () => { /* noop: keep app running */ });
+  autoScanWorker.on('exit', () => { autoScanWorker = null; });
+  autoScanWorker.postMessage({ type: 'start', intervalMs, signatures: {
+    processNames: maliciousSignatures.processNames,
+    ports: maliciousSignatures.ports.map(p => Number(p)),
+    domains: maliciousSignatures.domains
+  }});
+  return true;
+}
+
+function stopAutoScanWorker() {
+  if (!autoScanWorker) return true;
+  try { autoScanWorker.postMessage({ type: 'stop' }); } catch {}
+  try { autoScanWorker.terminate(); } catch {}
+  autoScanWorker = null;
+  return true;
+}
+
+ipcMain.handle('app:autoScanStart', async (_evt, intervalMs) => {
+  try { return startAutoScanWorker(Number(intervalMs) || 30000); } catch { return false; }
+});
+
+ipcMain.handle('app:autoScanStop', async () => {
+  try { return stopAutoScanWorker(); } catch { return false; }
 }); 

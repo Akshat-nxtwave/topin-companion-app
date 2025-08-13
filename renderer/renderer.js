@@ -15,7 +15,12 @@ function setNotifStatus(status){
   notifStatusEl.style.background = status.enabledLikely ? '#284047' : '#2b3a20';
 }
 
+let isChecking = false;
+let unsubscribeAutoScan = null;
+
 async function runSystemCheck(){
+  if (isChecking) return;
+  isChecking = true;
   scanBtn.disabled = true;
   globalStatusEl.textContent = 'Step 1/2: Checking notifications…';
   globalHintEl.textContent = 'Verifying system/browser notification settings';
@@ -134,6 +139,7 @@ async function runSystemCheck(){
     globalHintEl.textContent = e.message;
   } finally {
     scanBtn.disabled = false;
+    isChecking = false;
   }
 }
 
@@ -142,4 +148,15 @@ scanBtn.addEventListener('click', runSystemCheck);
 (async function init(){
   globalStatusEl.textContent = 'Idle';
   globalHintEl.textContent = 'Click Scan Now to run notifications check and system scan.';
-})(); 
+  if (unsubscribeAutoScan) { try { unsubscribeAutoScan(); } catch {} }
+  unsubscribeAutoScan = window.companion.onAutoScanResult(() => {
+    if (!isChecking) runSystemCheck();
+  });
+  try { await window.companion.startAutoScan(30000); } catch {}
+})();
+
+window.addEventListener('beforeunload', () => {
+  try { if (unsubscribeAutoScan) unsubscribeAutoScan(); } catch {}
+  try { window.companion.stopAutoScan(); } catch {}
+  unsubscribeAutoScan = null;
+}); 
