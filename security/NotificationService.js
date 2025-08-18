@@ -47,17 +47,26 @@ class NotificationService {
       }
     }
 
-    // Only keep processes whose app has notifications enabled
-    const filteredProcesses = (processes || []).filter(p => {
-      const n = String(p.name || '').toLowerCase();
-      return (
-        (enabledBrowsers.has('chrome') && n.includes('chrome') && !n.includes('chromium')) ||
-        (enabledBrowsers.has('chromium') && n.includes('chromium')) ||
-        (enabledBrowsers.has('msedge') && (n.includes('msedge') || n.includes('microsoft edge'))) ||
-        (enabledBrowsers.has('brave') && n.includes('brave')) ||
-        (enabledBrowsers.has('firefox') && n.includes('firefox'))
-      );
-    }).map(p => ({ ...p, notifEnabled: true }));
+    // Detect non-browser app notification settings (best-effort)
+    const enabledApps = await this.#detectAppNotificationsEnabled(processes);
+
+    // Only keep non-system processes whose app has notifications enabled
+    const systemUsers = new Set(['root', 'SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE']);
+    const filteredProcesses = (processes || [])
+      .filter(p => p && !systemUsers.has(String(p.user || '').toUpperCase()))
+      .filter(p => {
+        const n = String(p.name || '').toLowerCase();
+        const isBrowserEnabled = (
+          (enabledBrowsers.has('chrome') && n.includes('chrome') && !n.includes('chromium')) ||
+          (enabledBrowsers.has('chromium') && n.includes('chromium')) ||
+          (enabledBrowsers.has('msedge') && (n.includes('msedge') || n.includes('microsoft edge'))) ||
+          (enabledBrowsers.has('brave') && n.includes('brave')) ||
+          (enabledBrowsers.has('firefox') && n.includes('firefox'))
+        );
+        const isKnownAppEnabled = Array.from(enabledApps).some(a => n.includes(a));
+        return isBrowserEnabled || isKnownAppEnabled;
+      })
+      .map(p => ({ ...p, notifEnabled: true }));
 
     return { system, browsers, processes: filteredProcesses };
   }
@@ -306,6 +315,77 @@ class NotificationService {
     }
 
     return Array.from(groups.values()).map(p => ({ pid: p.pid, name: p.name || 'unknown', path: p.path, cpu: p.cpu, mem: p.mem, state: p.state, backgroundLikely: p.state.includes('sleep') && (p.cpu || 0) < 1 }));
+  }
+
+  async #detectAppNotificationsEnabled(processes) {
+    const present = new Set();
+    for (const p of processes || []) {
+      const n = String(p.name || '').toLowerCase();
+      if (n.includes('slack')) present.add('slack');
+      if (n.includes('teams') || n.includes('microsoft teams')) present.add('teams');
+      if (n.includes('discord')) present.add('discord');
+      if (n.includes('skype')) present.add('skype');
+      if (n.includes('zoom')) present.add('zoom');
+      if (n.includes('whatsapp')) present.add('whatsapp');
+      if (n.includes('telegram')) present.add('telegram');
+      if (n.includes('signal')) present.add('signal');
+      if (n.includes('thunderbird')) present.add('thunderbird');
+      if (n.includes('outlook')) present.add('outlook');
+      if (n.includes('spotify')) present.add('spotify');
+    }
+
+    const enabled = new Set();
+
+    // Best-effort checks for specific apps
+    if (present.has('teams')) {
+      try {
+        const teamsEnabled = await this.#checkTeamsNotificationsEnabled();
+        if (teamsEnabled) enabled.add('teams');
+      } catch {}
+    }
+
+    if (present.has('slack')) {
+      // Slack generally enables notifications by default; settings are stored in Local Storage which is not trivially accessible.
+      // Treat as enabled when running.
+      enabled.add('slack');
+    }
+
+    // Mark other present apps as enabled by default (heuristic) since most allow notifications by default
+    for (const app of present) {
+      if (!enabled.has(app)) enabled.add(app);
+    }
+
+    return enabled;
+  }
+
+  async #checkTeamsNotificationsEnabled() {
+    try {
+      const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
+      let base = '';
+      if (process.platform === 'win32') base = path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Microsoft', 'Teams');
+      else if (process.platform === 'darwin') base = path.join(home, 'Library', 'Application Support', 'Microsoft', 'Teams');
+      else base = path.join(home, '.config', 'Microsoft', 'Teams');
+
+      const candidates = [
+        path.join(base, 'desktop-config.json'),
+        path.join(base, 'settings.json')
+      ];
+      for (const fp of candidates) {
+        if (!fs.existsSync(fp)) continue;
+        try {
+          const text = fs.readFileSync(fp, 'utf8');
+          const json = JSON.parse(text);
+          // Look for obvious disable flags
+          const flattened = JSON.stringify(json).toLowerCase();
+          if (flattened.includes('disablenotifications":true') || flattened.includes('muted":true') || flattened.includes('donotdisturb":true')) {
+            return false;
+          }
+          return true;
+        } catch {}
+      }
+    } catch {}
+    // If unknown, assume enabled
+    return true;
   }
 }
 

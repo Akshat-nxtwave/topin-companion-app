@@ -16,7 +16,19 @@ async function performScanOnce() {
 			domains: signatures.domains
 		});
 		report.threats = threats;
-		try { parentPort.postMessage({ type: 'result', payload: { ok: true, report } }); } catch {}
+		
+		// Send threat detection results back to main process for event handling
+		try { 
+			parentPort.postMessage({ 
+				type: 'result', 
+				payload: { 
+					ok: true, 
+					report,
+					hasThreats: threats && threats.length > 0,
+					threatCount: threats ? threats.length : 0
+				} 
+			}); 
+		} catch {}
 	} catch (e) {
 		try { parentPort.postMessage({ type: 'result', payload: { ok: false, error: String(e) } }); } catch {}
 	}
