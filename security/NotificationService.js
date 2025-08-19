@@ -305,7 +305,7 @@ class NotificationService {
   async #getNotifierProcesses() {
     const proc = await si.processes();
     const browserCandidates = ['chrome','chromium','msedge','brave','firefox','opera'];
-    const appCandidates = ['slack','discord','teams','skype','zoom','whatsapp','telegram','signal','thunderbird','outlook','spotify'];
+    const appCandidates = ['slack','discord','teams','skype','zoom','whatsapp','telegram','signal','thunderbird','outlook','spotify','clickup'];
     const excludeCmdPatterns = ['--type=renderer','--type=gpu-process','--type=utility','--type=zygote','--type=broker','crashpad','crashpad_handler','zygote','utility','broker','extension','devtools','headless'];
 
     const list = (proc.list || []).map(p => ({ pid: p.pid, ppid: p.parentPid || p.ppid, name: String(p.name || ''), nameLower: String(p.name || '').toLowerCase(), path: p.path, user: p.user, cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0, mem: Number.isFinite(p.pmem) ? p.pmem : 0, state: (p.state || '').toLowerCase(), command: String(p.command || '').toLowerCase() }));
@@ -322,7 +322,10 @@ class NotificationService {
       if (excludeCmdPatterns.some(x => p.command.includes(x) || p.nameLower.includes(x))) return false;
       // Exclude webview/updater/update helpers
       if (p.nameLower.includes('webview') || p.command.includes('webview') || p.nameLower.includes('updater') || p.command.includes('updater') || p.nameLower.includes('update') || p.command.includes('update')) return false;
-      const isActive = (p.cpu >= 0.5) || (p.mem >= 1) || ['running','r'].includes(p.state) || p.state === '';
+      // Consider UI communication apps active with lower thresholds to avoid missing them when idle
+      const isActive = isApp
+        ? ((p.cpu >= 0.1) || (p.mem >= 0.2) || ['running','r'].includes(p.state) || p.state === '')
+        : ((p.cpu >= 0.5) || (p.mem >= 1) || ['running','r'].includes(p.state) || p.state === '');
       return isActive;
     });
 
@@ -335,7 +338,15 @@ class NotificationService {
       if (!prev || p.cpu > prev.cpu) groups.set(key, p);
     }
 
-    return Array.from(groups.values()).map(p => ({ pid: p.pid, name: p.name || 'unknown', path: p.path, cpu: p.cpu, mem: p.mem, state: p.state, backgroundLikely: p.state.includes('sleep') && (p.cpu || 0) < 1 }));
+    return Array.from(groups.values()).map(p => ({
+      pid: p.pid,
+      name: p.name || 'unknown',
+      path: p.path,
+      cpu: p.cpu,
+      mem: p.mem,
+      state: p.state,
+      backgroundLikely: (p.state.includes('sleep') && (p.cpu || 0) < 1) && !appCandidates.some(a => (p.nameLower || '').includes(a) || (p.command || '').includes(a))
+    }));
   }
 
   async #detectAppNotificationsEnabled(processes) {
@@ -353,6 +364,7 @@ class NotificationService {
       if (n.includes('thunderbird')) present.add('thunderbird');
       if (n.includes('outlook')) present.add('outlook');
       if (n.includes('spotify')) present.add('spotify');
+      if (n.includes('clickup')) present.add('clickup');
     }
 
     const enabled = new Set();
