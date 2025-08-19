@@ -305,7 +305,10 @@ class NotificationService {
   async #getNotifierProcesses() {
     const proc = await si.processes();
     const browserCandidates = ['chrome','chromium','msedge','brave','firefox','opera'];
-    const appCandidates = ['slack','discord','teams','skype','zoom','whatsapp','telegram','signal','thunderbird','outlook','spotify','clickup'];
+    const appCandidates = [
+      // Common communication/productivity apps
+      'slack','discord','teams','ms-teams','msteams','microsoft teams','skype','zoom','whatsapp','telegram','signal','thunderbird','outlook','spotify','clickup'
+    ];
     const excludeCmdPatterns = ['--type=renderer','--type=gpu-process','--type=utility','--type=zygote','--type=broker','crashpad','crashpad_handler','zygote','utility','broker','extension','devtools','headless'];
 
     const list = (proc.list || []).map(p => ({ pid: p.pid, ppid: p.parentPid || p.ppid, name: String(p.name || ''), nameLower: String(p.name || '').toLowerCase(), path: p.path, user: p.user, cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0, mem: Number.isFinite(p.pmem) ? p.pmem : 0, state: (p.state || '').toLowerCase(), command: String(p.command || '').toLowerCase() }));
@@ -317,30 +320,56 @@ class NotificationService {
       // Exclude crashpad helpers from candidate list; will only be considered if not system and explicitly matched later
       if (p.nameLower.includes('crashpad') || p.command.includes('crashpad')) return false;
       const isBrowser = browserCandidates.some(c => p.nameLower.includes(c) || p.command.includes(c));
-      const isApp = appCandidates.some(c => p.nameLower.includes(c) || p.command.includes(c));
+      const matchedApp = appCandidates.find(c => p.nameLower.includes(c) || p.command.includes(c));
+      const isApp = Boolean(matchedApp);
       if (!isBrowser && !isApp) return false;
       if (excludeCmdPatterns.some(x => p.command.includes(x) || p.nameLower.includes(x))) return false;
-      // Exclude webview/updater/update helpers
-      if (p.nameLower.includes('webview') || p.command.includes('webview') || p.nameLower.includes('updater') || p.command.includes('updater') || p.nameLower.includes('update') || p.command.includes('update')) return false;
-      // Consider UI communication apps active with lower thresholds to avoid missing them when idle
-      const isActive = isApp
-        ? ((p.cpu >= 0.1) || (p.mem >= 0.2) || ['running','r'].includes(p.state) || p.state === '')
-        : ((p.cpu >= 0.5) || (p.mem >= 1) || ['running','r'].includes(p.state) || p.state === '');
-      return isActive;
+      // Exclude webview helpers always
+      if (p.nameLower.includes('webview') || p.command.includes('webview')) return false;
+      // Updater/Update helpers: keep only if they clearly launch a known app (e.g., Update.exe --processStart "Teams.exe")
+      const isUpdaterProc = p.nameLower.includes('updater') || p.command.includes('updater') || p.nameLower.includes('update.exe') || (/\\update\.exe/.test(p.command));
+      if ((p.nameLower.includes('update') || isUpdaterProc)) {
+        if (matchedApp) {
+          // Tag normalized app for downstream grouping/name
+          p._normalizedApp = matchedApp;
+        } else {
+          return false;
+        }
+      }
+      // Always include recognized UI apps (Teams/Slack/etc.) even when idle, since Windows may report them as sleeping
+      if (isApp) return true;
+      // For browsers, keep only meaningfully active ones
+      const isActiveBrowser = (p.cpu >= 0.5) || (p.mem >= 1) || ['running','r'].includes(p.state) || p.state === '';
+      return isActiveBrowser;
     });
 
     const groups = new Map();
     for (const p of candidates) {
       let key = 'other:' + p.nameLower;
       for (const b of browserCandidates) if (p.nameLower.includes(b) || p.command.includes(b)) { key = 'browser:' + b; break; }
-      for (const a of appCandidates) if (p.nameLower.includes(a) || p.command.includes(a)) { key = 'app:' + a; }
+      // Prefer normalized app tag if assigned (e.g., Update.exe launching Teams)
+      if (p._normalizedApp) {
+        key = 'app:' + p._normalizedApp;
+      } else {
+        for (const a of appCandidates) if (p.nameLower.includes(a) || p.command.includes(a)) { key = 'app:' + a; }
+      }
       const prev = groups.get(key);
       if (!prev || p.cpu > prev.cpu) groups.set(key, p);
     }
 
+    const normalizeDisplayName = (p) => {
+      const map = new Map([
+        ['ms-teams','Microsoft Teams'], ['msteams','Microsoft Teams'], ['microsoft teams','Microsoft Teams'], ['teams','Microsoft Teams'],
+        ['slack','Slack'], ['discord','Discord'], ['skype','Skype'], ['zoom','Zoom'], ['whatsapp','WhatsApp'], ['telegram','Telegram'], ['signal','Signal'], ['thunderbird','Thunderbird'], ['outlook','Outlook'], ['spotify','Spotify'], ['clickup','ClickUp']
+      ]);
+      const fromTag = p._normalizedApp && map.get(p._normalizedApp);
+      if (fromTag) return fromTag;
+      for (const [k, v] of map.entries()) if ((p.nameLower || '').includes(k) || (p.command || '').includes(k)) return v;
+      return p.name || 'unknown';
+    };
     return Array.from(groups.values()).map(p => ({
       pid: p.pid,
-      name: p.name || 'unknown',
+      name: normalizeDisplayName(p),
       path: p.path,
       cpu: p.cpu,
       mem: p.mem,
@@ -354,7 +383,7 @@ class NotificationService {
     for (const p of processes || []) {
       const n = String(p.name || '').toLowerCase();
       if (n.includes('slack')) present.add('slack');
-      if (n.includes('teams') || n.includes('microsoft teams')) present.add('teams');
+      if (n.includes('teams') || n.includes('microsoft teams') || n.includes('ms-teams') || n.includes('msteams')) present.add('teams');
       if (n.includes('discord')) present.add('discord');
       if (n.includes('skype')) present.add('skype');
       if (n.includes('zoom')) present.add('zoom');
