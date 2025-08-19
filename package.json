@@ -11,6 +11,7 @@
   "scripts": {
     "start": "ELECTRON_DISABLE_SANDBOX=1 electron .",
     "dev": "ELECTRON_DISABLE_SANDBOX=1 electron .",
+    "start:win": "electron .",
     "pack": "electron-builder --dir",
     "pack:win": "electron-builder --win --dir",
     "dist": "electron-builder",
