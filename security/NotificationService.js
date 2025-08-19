@@ -34,6 +34,9 @@ class NotificationService {
       this.#getNotifierProcesses()
     ]);
 
+    // Only consider active (non-background) processes across all OSes
+    const activeProcesses = (processes || []).filter(p => !p.backgroundLikely);
+
     // Build set of browsers with notifications enabled in any active profile
     const enabledBrowsers = new Set();
     for (const b of browsers || []) {
@@ -48,12 +51,18 @@ class NotificationService {
     }
 
     // Detect non-browser app notification settings (best-effort)
-    const enabledApps = await this.#detectAppNotificationsEnabled(processes);
+    const enabledApps = await this.#detectAppNotificationsEnabled(activeProcesses);
 
     // Only keep non-system processes whose app has notifications enabled
-    const systemUsers = new Set(['root', 'SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE']);
-    const filteredProcesses = (processes || [])
+    const systemUsers = new Set(['ROOT', 'SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE']);
+    const nameExcluded = (n) => {
+      const x = String(n || '').toLowerCase();
+      if (!x) return false;
+      return x === 'win32' || x === 'darwin' || x.includes('crashpad');
+    };
+    const filteredProcesses = (activeProcesses || [])
       .filter(p => p && !systemUsers.has(String(p.user || '').toUpperCase()))
+      .filter(p => !nameExcluded(p.name))
       .filter(p => {
         const n = String(p.name || '').toLowerCase();
         const isBrowserEnabled = (
@@ -119,9 +128,14 @@ class NotificationService {
 
   async #buildActiveBrowserHints() {
     const proc = await si.processes();
-    const list = (proc.list || []).map(p => ({ name: String(p.name || ''), cmd: String(p.command || ''), nameLower: String(p.name || '').toLowerCase(), cmdLower: String(p.command || '').toLowerCase() }));
+    const excludeCmdPatterns = ['--type=renderer','--type=gpu-process','--type=utility','--type=zygote','--type=broker','crashpad','crashpad_handler','zygote','utility','broker','extension','devtools','headless'];
+    const list = (proc.list || []).map(p => ({ name: String(p.name || ''), cmd: String(p.command || ''), nameLower: String(p.name || '').toLowerCase(), cmdLower: String(p.command || '').toLowerCase(), cpu: Number(p.pcpu) || 0, mem: Number(p.pmem) || 0, state: String(p.state || '').toLowerCase() }));
+    const isActive = (p) => (p.cpu >= 1) || (p.mem >= 1.5) || ['running','r'].includes(p.state);
+    const notHelper = (p) => !excludeCmdPatterns.some(x => p.cmdLower.includes(x) || p.nameLower.includes(x));
+    const notWebViewOrUpdater = (p) => !(p.nameLower.includes('webview') || p.cmdLower.includes('webview') || p.nameLower.includes('updater') || p.cmdLower.includes('updater') || p.nameLower.includes('update') || p.cmdLower.includes('update'));
     const hints = { chrome: [], msedge: [], brave: [], chromium: [], firefox: [], safari: false };
     for (const p of list) {
+      if (!isActive(p) || !notHelper(p) || !notWebViewOrUpdater(p)) continue;
       const isChrome = p.nameLower.includes('chrome') && !p.nameLower.includes('chromium');
       const isChromium = p.nameLower.includes('chromium');
       const isEdge = p.nameLower.includes('msedge') || p.nameLower.includes('microsoft-edge');
