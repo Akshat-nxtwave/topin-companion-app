@@ -64,7 +64,8 @@ async function runSystemCheck(){
 
         const anyNeedsDisable = (browsers || []).some(b => (b.profiles || []).some(p => p.status !== 'disabled'));
         const anyProc = procs.length > 0;
-        const showTables = (sys && sys.status === 'enabled') || anyNeedsDisable || anyProc;
+        // Exclude system notification status from action/table decisions
+        const showTables = anyNeedsDisable || anyProc;
 
         if (showTables) {
           const sysTable = `
@@ -108,9 +109,9 @@ async function runSystemCheck(){
           notifAuditEl.innerHTML = '';
         }
 
-        if ((sys && sys.status === 'enabled') || anyNeedsDisable || anyProc) {
+        if (anyNeedsDisable || anyProc) {
           globalStatusEl.textContent = 'Action required: Notifications are ON';
-          globalHintEl.innerHTML = 'Please turn off notifications in system settings and/or disable in your browser/apps, then re-run the check.';
+          globalHintEl.innerHTML = 'Please disable notifications in your browser/apps, then re-run the check.';
           return;
         }
       } else {

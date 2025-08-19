@@ -3,17 +3,82 @@
   "version": "0.1.0",
   "description": "Minimal cross-platform companion app (Electron v28)",
   "main": "main.js",
-  "author": "",
+  "author": {
+    "name": "TOPIN",
+    "email": "support@example.com"
+  },
   "license": "MIT",
   "scripts": {
     "start": "ELECTRON_DISABLE_SANDBOX=1 electron .",
-    "dev": "ELECTRON_DISABLE_SANDBOX=1 electron ."
+    "dev": "ELECTRON_DISABLE_SANDBOX=1 electron .",
+    "pack": "electron-builder --dir",
+    "pack:win": "electron-builder --win --dir",
+    "dist": "electron-builder",
+    "build": "electron-builder",
+    "build:linux": "electron-builder --linux",
+    "build:win": "electron-builder --win",
+    "build:win:zip": "electron-builder --win zip --publish never",
+    "build:mac": "electron-builder --mac",
+    "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "systeminformation": "^5.21.23",
     "ws": "^8.17.0"
   },
   "devDependencies": {
-    "electron": "28.0.0"
+    "electron": "28.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.topin.companion",
+    "productName": "TOPIN Companion",
+    "publish": "never",
+    "directories": {
+      "output": "dist"
+    },
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "comm/**",
+      "security/**",
+      "renderer/**",
+      "workers/**",
+      "data/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "data/",
+        "to": "data",
+        "filter": [
+          "*.json"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "workers/**"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "maintainer": "TOPIN <support@example.com>"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": false
+    }
   }
 } 

@@ -4,8 +4,9 @@ contextBridge.exposeInMainWorld('companion', {
   getNotificationStatus: () => ipcRenderer.invoke('app:getNotificationStatus'),
   openNotificationSettings: () => ipcRenderer.invoke('app:openNotificationSettings'),
   openGuide: (kind) => ipcRenderer.invoke('app:openGuide', kind),
-  scan: () => ipcRenderer.invoke('app:scan'),
-  auditNotifications: () => ipcRenderer.invoke('app:auditNotifications'),
+  // Accept optional scanId to pair events across calls
+  scan: (scanId) => ipcRenderer.invoke('app:scan', scanId),
+  auditNotifications: (scanId) => ipcRenderer.invoke('app:auditNotifications', scanId),
   completeSystemCheck: () => ipcRenderer.invoke('app:completeSystemCheck'),
   
   // Stepped scanning functions

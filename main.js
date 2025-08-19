@@ -54,6 +54,36 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
   
   // EXCLUDE system notifications from threat analysis as per user requirement
   // System notifications are not considered threats
+  const systemProcessNameExclusions = new Set(['win32', 'darwin']);
+  const isProcessNameExcluded = (name) => {
+    const n = String(name || '').toLowerCase();
+    if (!n) return false;
+    if (systemProcessNameExclusions.has(n)) return true;
+    if (n.includes('crashpad')) return true;
+    return false;
+  };
+  const runningProcessNames = new Set(
+    (auditResult.processes || [])
+      .map(p => String(p.name || '').toLowerCase())
+      .filter(n => n && !isProcessNameExcluded(n))
+  );
+  const hasRunningBrowser = (browserKey) => {
+    // Map logical browser key to process name patterns
+    const patterns = {
+      chrome: ['chrome'],
+      chromium: ['chromium'],
+      msedge: ['msedge', 'microsoft edge'],
+      brave: ['brave'],
+      firefox: ['firefox']
+    }[browserKey] || [];
+    // Exclude webview/updater helpers
+    const excludedSubstrings = ['webview', 'edgewebview', 'updater', 'update'];
+    for (const name of runningProcessNames) {
+      if (excludedSubstrings.some(x => name.includes(x))) continue;
+      if (patterns.some(p => name.includes(p))) return true;
+    }
+    return false;
+  };
   
   // Check for browser notifications enabled
   // Only consider browsers with status 'enabled' as threats, regardless of URL counts
@@ -64,7 +94,14 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
       if (browser.profiles && browser.profiles.length > 0) {
         // Only profiles with status 'enabled' are threats - ignore allowed/blocked URL counts
         const enabledProfiles = browser.profiles.filter(profile => profile.status === 'enabled');
-        if (enabledProfiles.length > 0) {
+        const bname = String(browser.browser || '').toLowerCase();
+        const key = bname.includes('chromium') ? 'chromium'
+          : bname.includes('edge') ? 'msedge'
+          : bname.includes('brave') ? 'brave'
+          : bname.includes('firefox') ? 'firefox'
+          : 'chrome';
+        // Only report as threat if corresponding browser process is actually running
+        if (enabledProfiles.length > 0 && hasRunningBrowser(key)) {
           enabledBrowsers.push({
             browser: browser.browser,
             enabledProfiles: enabledProfiles.length,
@@ -90,7 +127,7 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
   
   // Check for notification-enabled applications/processes
   if (auditResult.processes && auditResult.processes.length > 0) {
-    const enabledApps = auditResult.processes.filter(proc => proc.notifEnabled);
+    const enabledApps = auditResult.processes.filter(proc => proc.notifEnabled && !isProcessNameExcluded(proc.name));
     
     if (enabledApps.length > 0) {
       threats.push({
@@ -471,7 +508,9 @@ app.on('before-quit', () => {
 
 // Load malicious signatures
 let maliciousSignatures = { processNames: [], ports: [], domains: [], packages: [] };
-const signaturesPath = path.join(__dirname, 'data', 'malicious.json');
+const signaturesPath = app.isPackaged
+  ? path.join(process.resourcesPath, 'data', 'malicious.json')
+  : path.join(__dirname, 'data', 'malicious.json');
 function loadSignatures() {
   try {
     const raw = fs.readFileSync(signaturesPath, 'utf8');
@@ -523,7 +562,7 @@ async function scanSystem() {
 
 ipcMain.handle('app:getNotificationStatus', async () => notificationService.getNotificationStatus());
 ipcMain.handle('app:openNotificationSettings', async () => notificationService.openNotificationSettings());
-ipcMain.handle('app:auditNotifications', async () => {
+ipcMain.handle('app:auditNotifications', async (_evt, _providedScanId) => {
   try {
     // Send SCANNING_STARTED event to TOPIN website
     const scanId = Date.now();
@@ -567,6 +606,18 @@ ipcMain.handle('app:auditNotifications', async () => {
           processCount: audit.processes?.length || 0
         }
       });
+      // Pair with suspicious completion (from app:scan) in a time window
+      sequentialCompletion.notifComplete = true;
+      if (sequentialCompletion.notifComplete && sequentialCompletion.suspiciousComplete) {
+        sendTopinEvent(TopinEvents.SYSTEM_CHECK_SUCCESSFUL, {
+          scanId: Date.now(),
+          scanType: 'sequential_checks',
+          message: 'All system checks completed successfully - no threats detected'
+        });
+        clearSequentialCompletion();
+      } else {
+        armSequentialCompletionExpiry();
+      }
     }
     
     return { ok: true, ...audit };
@@ -1126,9 +1177,49 @@ async function completeSystemCheck() {
 }
 
 // Updated IPC handlers for stepped scanning
-ipcMain.handle('app:scan', async () => {
+// Track completion state for sequential UI flow (no strict single-session requirement)
+const sequentialCompletion = { notifComplete: false, suspiciousComplete: false, timer: null };
+function clearSequentialCompletion() {
+  sequentialCompletion.notifComplete = false;
+  sequentialCompletion.suspiciousComplete = false;
+  if (sequentialCompletion.timer) {
+    try { clearTimeout(sequentialCompletion.timer); } catch {}
+    sequentialCompletion.timer = null;
+  }
+}
+function armSequentialCompletionExpiry() {
+  if (sequentialCompletion.timer) {
+    try { clearTimeout(sequentialCompletion.timer); } catch {}
+  }
+  sequentialCompletion.timer = setTimeout(() => {
+    clearSequentialCompletion();
+  }, 20000); // auto-expire after 20s if the other half doesn't arrive
+}
+
+ipcMain.handle('app:scan', async (_evt, _providedScanId) => {
   // Use legacy scan for compatibility with existing UI
-  return legacyScan();
+  const res = await legacyScan({});
+  try {
+    if (res && res.ok && res.report && Array.isArray(res.report.threats)) {
+      const hasThreats = res.report.threats.length > 0;
+      if (!hasThreats) {
+        sequentialCompletion.suspiciousComplete = true;
+        if (sequentialCompletion.notifComplete && sequentialCompletion.suspiciousComplete) {
+          sendTopinEvent(TopinEvents.SYSTEM_CHECK_SUCCESSFUL, {
+            scanId: Date.now(),
+            scanType: 'sequential_checks',
+            message: 'All system checks completed successfully - no threats detected'
+          });
+          clearSequentialCompletion();
+        } else {
+          armSequentialCompletionExpiry();
+        }
+      } else {
+        clearSequentialCompletion();
+      }
+    }
+  } catch {}
+  return res;
 });
 
 ipcMain.handle('app:completeSystemCheck', async () => {
@@ -1166,7 +1257,9 @@ let autoScanWorker = null;
 
 function startAutoScanWorker(intervalMs = 30000) {
   if (autoScanWorker) return true;
-  const workerPath = path.join(__dirname, 'workers', 'autoScanWorker.js');
+  const workerPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'workers', 'autoScanWorker.js')
+    : path.join(__dirname, 'workers', 'autoScanWorker.js');
   autoScanWorker = new Worker(workerPath, {
     workerData: null
   });

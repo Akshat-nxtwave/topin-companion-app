@@ -297,10 +297,17 @@ class NotificationService {
     const list = (proc.list || []).map(p => ({ pid: p.pid, ppid: p.parentPid || p.ppid, name: String(p.name || ''), nameLower: String(p.name || '').toLowerCase(), path: p.path, user: p.user, cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0, mem: Number.isFinite(p.pmem) ? p.pmem : 0, state: (p.state || '').toLowerCase(), command: String(p.command || '').toLowerCase() }));
 
     const candidates = list.filter(p => {
+      // Exclude obvious system placeholders/names
+      const sysName = p.nameLower === 'win32' || p.nameLower === 'darwin';
+      if (sysName) return false;
+      // Exclude crashpad helpers from candidate list; will only be considered if not system and explicitly matched later
+      if (p.nameLower.includes('crashpad') || p.command.includes('crashpad')) return false;
       const isBrowser = browserCandidates.some(c => p.nameLower.includes(c) || p.command.includes(c));
       const isApp = appCandidates.some(c => p.nameLower.includes(c) || p.command.includes(c));
       if (!isBrowser && !isApp) return false;
       if (excludeCmdPatterns.some(x => p.command.includes(x) || p.nameLower.includes(x))) return false;
+      // Exclude webview/updater/update helpers
+      if (p.nameLower.includes('webview') || p.command.includes('webview') || p.nameLower.includes('updater') || p.command.includes('updater') || p.nameLower.includes('update') || p.command.includes('update')) return false;
       const isActive = (p.cpu >= 0.5) || (p.mem >= 1) || ['running','r'].includes(p.state) || p.state === '';
       return isActive;
     });
