@@ -131,10 +131,11 @@ class SecurityService extends EventEmitter {
         const firstToken = (p.command || '').split(/\s+/)[0] || '';
         const exeBase = path.basename(firstToken).toLowerCase();
 
-        const matchedApp = this.remoteControlApps.find(app => {
-          const a = app.toLowerCase();
-          return name.includes(a) || exeBase.includes(a) || (cmd.includes(a) && !/\.(deb|rpm|msi|dmg)/.test(cmd));
-        });
+        const matchedApp = null; 
+        // this.remoteControlApps.find(app => {
+        //   const a = app.toLowerCase();
+        //   return name.includes(a) || exeBase.includes(a) || (cmd.includes(a) && !/\.(deb|rpm|msi|dmg)/.test(cmd));
+        // });
         if (!matchedApp) continue;
 
         const isActiveUser = this.isActiveUserApplication(name, cmd);

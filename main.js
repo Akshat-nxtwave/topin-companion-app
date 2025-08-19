@@ -1038,49 +1038,16 @@ async function completeSystemCheck() {
   try {
     const scanId = Date.now();
     
-    // Send SCANNING_STARTED event
+    // Send SCANNING_STARTED event (notifications first)
     sendTopinEvent(TopinEvents.SCANNING_STARTED, {
       scanId: scanId,
       scanType: 'complete_system_check',
-      steps: ['security_scan', 'notification_audit'],
+      steps: ['notification_audit', 'security_scan'],
       currentStep: 1,
-      stepName: 'security_scan'
+      stepName: 'notification_audit'
     });
     
-    // Step 1: Security scan (skip events - we'll send them ourselves)
-    const securityResult = await legacyScan({ 
-      skipEvents: true, 
-      scanId: scanId, 
-      scanType: 'complete_system_check' 
-    });
-    
-    if (!securityResult.ok) {
-      return securityResult;
-    }
-    
-    const hasSecurityThreats = securityResult.report.threats && securityResult.report.threats.length > 0;
-    
-    // Send security events
-    if (hasSecurityThreats) {
-      securityResult.report.threats.forEach(threat => {
-        sendTopinEvent(TopinEvents.SUSPICIOUS_APPLICATION_DETECTED, {
-          scanId: scanId,
-          scanType: 'complete_system_check',
-          threat: threat,
-          type: threat.type,
-          severity: threat.severity,
-          message: threat.message,
-          details: threat.details || {},
-          processInfo: {
-            name: threat.details?.name || threat.name,
-            pid: threat.details?.pid || threat.pid,
-            port: threat.details?.port || threat.port
-          }
-        });
-      });
-    }
-    
-    // Step 2: Notification audit
+    // Step 1: Notification audit
     const notificationResult = await notificationService.auditNotifications();
     const notificationThreats = analyzeNotificationThreatsFromAudit(notificationResult);
     const hasNotificationThreats = notificationThreats.length > 0;
@@ -1100,13 +1067,7 @@ async function completeSystemCheck() {
           apps: threat.apps || []
         });
       });
-    }
-    
-    // Send completion events for clean checks
-    let sentNotificationComplete = false;
-    let sentSuspiciousComplete = false;
-    
-    if (!hasNotificationThreats) {
+    } else {
       sendTopinEvent(TopinEvents.NOTIFICATION_CHECK_COMPLETE, {
         scanId: scanId,
         scanType: 'complete_system_check',
@@ -1117,10 +1078,36 @@ async function completeSystemCheck() {
           processCount: notificationResult.processes?.length || 0
         }
       });
-      sentNotificationComplete = true;
     }
     
-    if (!hasSecurityThreats) {
+    // Step 2: Security scan (skip events - we'll send them ourselves)
+    const securityResult = await legacyScan({ 
+      skipEvents: true, 
+      scanId: scanId, 
+      scanType: 'complete_system_check' 
+    });
+    const securityOk = !!(securityResult && securityResult.ok);
+    const hasSecurityThreats = securityOk && securityResult.report.threats && securityResult.report.threats.length > 0;
+    
+    // Send security events
+    if (hasSecurityThreats) {
+      securityResult.report.threats.forEach(threat => {
+        sendTopinEvent(TopinEvents.SUSPICIOUS_APPLICATION_DETECTED, {
+          scanId: scanId,
+          scanType: 'complete_system_check',
+          threat: threat,
+          type: threat.type,
+          severity: threat.severity,
+          message: threat.message,
+          details: threat.details || {},
+          processInfo: {
+            name: threat.details?.name || threat.name,
+            pid: threat.details?.pid || threat.pid,
+            port: threat.details?.port || threat.port
+          }
+        });
+      });
+    } else if (securityOk) {
       sendTopinEvent(TopinEvents.SUSPICIOUS_CHECK_COMPLETE, {
         scanId: scanId,
         scanType: 'complete_system_check',
@@ -1131,21 +1118,22 @@ async function completeSystemCheck() {
           cpuLoad: securityResult.report.load
         }
       });
-      sentSuspiciousComplete = true;
     }
     
     // Send SYSTEM_CHECK_SUCCESSFUL only if both completion events were sent
+    const sentNotificationComplete = !hasNotificationThreats;
+    const sentSuspiciousComplete = securityOk && !hasSecurityThreats;
     if (sentNotificationComplete && sentSuspiciousComplete) {
       sendTopinEvent(TopinEvents.SYSTEM_CHECK_SUCCESSFUL, {
         scanId: scanId,
         scanType: 'complete_system_check',
         message: 'All system checks completed successfully - no threats detected',
-        completedChecks: ['security_scan', 'notification_audit'],
-        systemReport: {
+        completedChecks: ['notification_audit', 'security_scan'],
+        systemReport: securityOk ? {
           platform: securityResult.report.platform,
           processCount: securityResult.report.processes?.length || 0,
           cpuLoad: securityResult.report.load
-        },
+        } : undefined,
         auditResult: {
           systemStatus: notificationResult.system?.status || 'unknown',
           browserCount: notificationResult.browsers?.length || 0,
@@ -1157,7 +1145,7 @@ async function completeSystemCheck() {
     // Return combined results
     return {
       ok: true,
-      security: securityResult.report,
+      security: securityOk ? securityResult.report : { threats: [], platform: process.platform, processes: [], load: 0 },
       notifications: {
         ...notificationResult,
         threats: notificationThreats
