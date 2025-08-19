@@ -6,14 +6,14 @@
   "author": "",
   "license": "MIT",
   "scripts": {
-    "start": "ELECTRON_DISABLE_SANDBOX=1 electron .",
-    "dev": "ELECTRON_DISABLE_SANDBOX=1 electron ."
+    "start": "ELECTRON_DISABLE_SANDBOX=1 ELECTRON_NO_ATTACH_CONSOLE=1 yarn electron .",
+    "dev": "ELECTRON_DISABLE_SANDBOX=1 ELECTRON_NO_ATTACH_CONSOLE=1 yarn electron ."
   },
   "dependencies": {
     "systeminformation": "^5.21.23",
     "ws": "^8.17.0"
   },
   "devDependencies": {
-    "electron": "28.0.0"
+    "electron": "^29.0.0"
   }
 } 

@@ -1,7 +1,22 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
+
+// Disable hardware acceleration and add stability flags
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu-vsync');
 app.commandLine.appendSwitch('log-level', '3');
+app.commandLine.appendSwitch('no-sandbox');
+app.commandLine.appendSwitch('disable-dev-shm-usage');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
+app.commandLine.appendSwitch('disable-ipc-flooding-protection');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-features', 'TranslateUI');
+app.commandLine.appendSwitch('disable-features', 'BlinkGenPropertyTrees');
+app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
 const path = require('path');
 const os = require('os');
 const si = require('systeminformation');
@@ -451,6 +466,9 @@ app.whenReady().then(() => {
     console.error('❌ Error starting WebSocket server:', error);
   }
 
+  // Temporarily disable auto-scan worker to prevent SIGTRAP
+  // startAutoScanWorker(30000);
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -467,6 +485,17 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   // Ensure WebSocket server is closed
   localServer.stop();
+});
+
+// Add global error handlers to prevent crashes
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  // Don't exit the process, just log the error
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // Don't exit the process, just log the error
 });
 
 // Load malicious signatures
@@ -508,17 +537,45 @@ async function getFallbackProcessesPOSIX() {
 }
 
 async function scanSystem() {
-  const [processes, currentLoad] = await Promise.all([si.processes(), si.currentLoad()]);
-  let running = (processes.list || []).map(p => ({ pid: p.pid, name: p.name || 'unknown', path: p.path, user: p.user, cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0, mem: Number.isFinite(p.pmem) ? p.pmem : 0, command: p.command || '' }));
-  if (running.length === 0) {
+  try {
+    // Temporarily disable systeminformation to prevent SIGTRAP
+    console.log('⚠️ systeminformation temporarily disabled to prevent SIGTRAP');
+    
+    // Use fallback process list only
+    let running = [];
     try {
       const fb = await getFallbackProcessesPOSIX();
-      if (fb.length) running = fb.map(p => ({ pid: p.pid, name: p.name, path: '', user: '', cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0, mem: Number.isFinite(p.pmem) ? p.pmem : 0, command: p.command }));
-    } catch {}
+      if (fb.length) running = fb.map(p => ({ 
+        pid: p.pid, 
+        name: p.name, 
+        path: '', 
+        user: '', 
+        cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0, 
+        mem: Number.isFinite(p.pmem) ? p.pmem : 0, 
+        command: p.command 
+      }));
+    } catch (e) {
+      console.warn('Fallback process scan failed:', e.message);
+    }
+    
+    running.sort((a,b) => (b.cpu || 0) - (a.cpu || 0));
+    const runningLimited = running.slice(0, 500);
+    
+    return { 
+      platform: os.platform(), 
+      arch: os.arch(), 
+      load: 0, 
+      processes: runningLimited 
+    };
+  } catch (error) {
+    console.error('scanSystem failed:', error);
+    return { 
+      platform: os.platform(), 
+      arch: os.arch(), 
+      load: 0, 
+      processes: [] 
+    };
   }
-  running.sort((a,b) => (b.cpu || 0) - (a.cpu || 0));
-  const runningLimited = running.slice(0, 500);
-  return { platform: os.platform(), arch: os.arch(), load: Number.isFinite(currentLoad.currentLoad) ? currentLoad.currentLoad : 0, processes: runningLimited };
 }
 
 ipcMain.handle('app:getNotificationStatus', async () => notificationService.getNotificationStatus());
