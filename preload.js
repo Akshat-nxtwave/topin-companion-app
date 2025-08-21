@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('companion', {
     ipcRenderer.on('app:autoScanResult', listener);
     return () => { ipcRenderer.removeListener('app:autoScanResult', listener); };
   },
+  // Threat application listing
+  listThreatApps: () => ipcRenderer.invoke('app:listThreatApps'),
   
   // WebSocket communication functions
   sendToClients: (data) => ipcRenderer.invoke('app:sendToClients', data),

@@ -2,6 +2,7 @@ const { EventEmitter } = require('events');
 const si = require('systeminformation');
 const os = require('os');
 const path = require('path');
+const fs = require('fs');
 const { exec } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
@@ -51,6 +52,279 @@ class SecurityService extends EventEmitter {
     ];
 
     this.suspiciousPorts = [5900,5901,5902,5903,5904,3389,22,23,5938,7070,4899,5500,6129];
+  }
+
+  getThreatPatterns() {
+    // Keyword patterns for matching app/process/service/extension names
+    return {
+      messaging: [
+        'whatsapp', 'telegram', 'discord', 'microsoft teams', 'teams', 'slack', 'zoom', 'signal', 'messenger', 'skype'
+      ],
+      remote_control: [
+        'teamviewer', 'anydesk', 'chrome remote desktop', 'chrome_remote_desktop', 'remote desktop', 'zoho assist', 'ultraviewer', 'remote utilities', 'remotepc', 'splashtop', 'vnc', 'realvnc', 'tightvnc', 'ultravnc', 'rdp', 'radmin', 'screenconnect', 'bomgar'
+      ],
+      virtualization: [
+        'virtualbox', 'vmware', 'parallels', 'qemu', 'kvm', 'hyper-v', 'hyperv', 'xen'
+      ],
+      screen_capture: [
+        'snagit', 'sharex', 'obs', 'obs studio', 'gyazo', 'camtasia', 'bandicam', 'fraps', 'screencast'
+      ]
+    };
+  }
+
+  normalizeName(name) {
+    return String(name || '').toLowerCase();
+  }
+
+  matchCategoryForName(name) {
+    const n = this.normalizeName(name);
+    const patterns = this.getThreatPatterns();
+    for (const category of Object.keys(patterns)) {
+      const match = patterns[category].find(p => n.includes(p));
+      if (match) return { category, match };
+    }
+    return null;
+  }
+
+  async listInstalledApplications() {
+    const platform = process.platform;
+    let names = new Set();
+    try {
+      if (platform === 'win32') {
+        try {
+          const ps = 'powershell -NoProfile -ExecutionPolicy Bypass -Command "'
+            + '$paths = @(\"HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*\", \"HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*\", \"HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*\");'
+            + '$paths | ForEach-Object { Get-ItemProperty $_ -ErrorAction SilentlyContinue } | Where-Object { $_.DisplayName } | Select-Object -ExpandProperty DisplayName | ForEach-Object { $_ }' + '"';
+          const r = await execAsync(ps);
+          const lines = (r.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+          for (const line of lines) names.add(line);
+        } catch {}
+        try {
+          const r2 = await execAsync('wmic product get name 2>NUL | findstr /R /V "Name"');
+          const lines = (r2.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+          for (const line of lines) names.add(line);
+        } catch {}
+      } else if (platform === 'darwin') {
+        try {
+          const r = await execAsync('ls -1 /Applications 2>/dev/null || true');
+          const lines = (r.stdout || '').split(/\n/).map(s => s.trim()).filter(Boolean);
+          for (const l of lines) names.add(l.replace(/\.app$/i, ''));
+        } catch {}
+        try {
+          const r2 = await execAsync('ls -1 "$HOME"/Applications 2>/dev/null || true');
+          const lines = (r2.stdout || '').split(/\n/).map(s => s.trim()).filter(Boolean);
+          for (const l of lines) names.add(l.replace(/\.app$/i, ''));
+        } catch {}
+        try {
+          const r3 = await execAsync('system_profiler SPApplicationsDataType -json 2>/dev/null || true');
+          const json = JSON.parse(r3.stdout || '{}');
+          const items = (json.SPApplicationsDataType || []).map(x => x._name).filter(Boolean);
+          for (const n of items) names.add(n);
+        } catch {}
+      } else {
+        // linux
+        try {
+          const r = await execAsync('dpkg -l 2>/dev/null | awk "NR>5 {print $2}" || true');
+          const lines = (r.stdout || '').split(/\n/).map(s => s.trim()).filter(Boolean);
+          for (const l of lines) names.add(l);
+        } catch {}
+        try {
+          const r2 = await execAsync('rpm -qa 2>/dev/null || true');
+          const lines = (r2.stdout || '').split(/\n/).map(s => s.trim()).filter(Boolean);
+          for (const l of lines) names.add(l);
+        } catch {}
+        try {
+          const r3 = await execAsync('flatpak list --app --columns=application 2>/dev/null || true');
+          const lines = (r3.stdout || '').split(/\n/).map(s => s.trim()).filter(Boolean);
+          for (const l of lines) names.add(l);
+        } catch {}
+        try {
+          const r4 = await execAsync('snap list 2>/dev/null | awk "NR>1 {print $1}" || true');
+          const lines = (r4.stdout || '').split(/\n/).map(s => s.trim()).filter(Boolean);
+          for (const l of lines) names.add(l);
+        } catch {}
+      }
+    } catch {}
+    return Array.from(names);
+  }
+
+  async listRunningServices() {
+    const platform = process.platform;
+    const services = new Set();
+    try {
+      if (platform === 'linux') {
+        try {
+          const r = await execAsync('systemctl list-units --type=service --state=running --no-legend --no-pager 2>/dev/null || true');
+          const lines = (r.stdout || '').split(/\n/).map(s => s.trim()).filter(Boolean);
+          for (const line of lines) {
+            const name = line.split(/\s+/)[0] || '';
+            if (name) services.add(name.replace(/\.service$/i, ''));
+          }
+        } catch {}
+      } else if (platform === 'win32') {
+        try {
+          const r = await execAsync('sc query type= service state= all');
+          const lines = (r.stdout || '').split(/\r?\n/);
+          for (const line of lines) {
+            const m = line.match(/SERVICE_NAME:\s*(.+)$/i);
+            if (m && m[1]) services.add(m[1].trim());
+          }
+        } catch {}
+      } else if (platform === 'darwin') {
+        try {
+          const r = await execAsync('launchctl list 2>/dev/null || true');
+          const lines = (r.stdout || '').split(/\n/).map(s => s.trim()).filter(Boolean);
+          for (const line of lines.slice(1)) {
+            const parts = line.split(/\s+/);
+            if (parts.length >= 3) services.add(parts[2]);
+          }
+        } catch {}
+      }
+    } catch {}
+    return Array.from(services);
+  }
+
+  async scanBrowserExtensions() {
+    const results = [];
+    const addChromiumExtensions = (baseDir, browser) => {
+      try {
+        const profileDirs = [];
+        if (fs.existsSync(baseDir)) {
+          const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+          for (const e of entries) if (e.isDirectory()) profileDirs.push(path.join(baseDir, e.name));
+        }
+        for (const profile of profileDirs) {
+          const extDir = path.join(profile, 'Extensions');
+          if (!fs.existsSync(extDir)) continue;
+          const extIds = fs.readdirSync(extDir, { withFileTypes: true }).filter(d => d.isDirectory());
+          for (const idDir of extIds) {
+            const idPath = path.join(extDir, idDir.name);
+            const versionDirs = fs.readdirSync(idPath, { withFileTypes: true }).filter(d => d.isDirectory());
+            for (const v of versionDirs) {
+              const manifestPath = path.join(idPath, v.name, 'manifest.json');
+              try {
+                if (!fs.existsSync(manifestPath)) continue;
+                const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+                const extName = manifest.name || '';
+                const extDesc = manifest.description || '';
+                const text = this.normalizeName(`${extName} ${extDesc}`);
+                const m = this.matchCategoryForName(text);
+                if (m) {
+                  results.push({ browser, name: manifest.name, category: m.category, match: m.match, id: idDir.name });
+                }
+              } catch {}
+            }
+          }
+        }
+      } catch {}
+    };
+
+    const home = os.homedir();
+    if (process.platform === 'win32') {
+      const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+      addChromiumExtensions(path.join(localAppData, 'Google', 'Chrome', 'User Data'), 'chrome');
+      addChromiumExtensions(path.join(localAppData, 'Microsoft', 'Edge', 'User Data'), 'edge');
+      addChromiumExtensions(path.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data'), 'brave');
+      addChromiumExtensions(path.join(localAppData, 'Chromium', 'User Data'), 'chromium');
+    } else if (process.platform === 'darwin') {
+      addChromiumExtensions(path.join(home, 'Library', 'Application Support', 'Google', 'Chrome'), 'chrome');
+      addChromiumExtensions(path.join(home, 'Library', 'Application Support', 'Microsoft Edge'), 'edge');
+      addChromiumExtensions(path.join(home, 'Library', 'Application Support', 'BraveSoftware', 'Brave-Browser'), 'brave');
+      addChromiumExtensions(path.join(home, 'Library', 'Application Support', 'Chromium'), 'chromium');
+    } else {
+      addChromiumExtensions(path.join(home, '.config', 'google-chrome'), 'chrome');
+      addChromiumExtensions(path.join(home, '.config', 'microsoft-edge'), 'edge');
+      addChromiumExtensions(path.join(home, '.config', 'BraveSoftware', 'Brave-Browser'), 'brave');
+      addChromiumExtensions(path.join(home, '.config', 'chromium'), 'chromium');
+    }
+
+    // Firefox
+    try {
+      const ffBase = process.platform === 'win32'
+        ? path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Mozilla', 'Firefox', 'Profiles')
+        : process.platform === 'darwin'
+          ? path.join(home, 'Library', 'Application Support', 'Firefox', 'Profiles')
+          : path.join(home, '.mozilla', 'firefox');
+      if (fs.existsSync(ffBase)) {
+        const profiles = fs.readdirSync(ffBase, { withFileTypes: true }).filter(d => d.isDirectory());
+        for (const p of profiles) {
+          const extJson = path.join(ffBase, p.name, 'extensions.json');
+          if (!fs.existsSync(extJson)) continue;
+          try {
+            const data = JSON.parse(fs.readFileSync(extJson, 'utf8'));
+            const addons = (data.addons || []).filter(a => a.name);
+            for (const a of addons) {
+              const text = this.normalizeName(`${a.name} ${a.description || ''}`);
+              const m = this.matchCategoryForName(text);
+              if (m) results.push({ browser: 'firefox', name: a.name, category: m.category, match: m.match, id: a.id || '' });
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    return results;
+  }
+
+  async listThreatApplications() {
+    try {
+      const [installed, processesRes, services, extensions] = await Promise.all([
+        this.listInstalledApplications(),
+        this.safe('processes', () => si.processes(), 3000),
+        this.listRunningServices(),
+        this.scanBrowserExtensions()
+      ]);
+      const processes = (processesRes && processesRes.list) ? processesRes.list : [];
+
+      const categories = {
+        messaging: { installed: [], running: [], services: [], extensions: [] },
+        remote_control: { installed: [], running: [], services: [], extensions: [] },
+        virtualization: { installed: [], running: [], services: [], extensions: [] },
+        screen_capture: { installed: [], running: [], services: [], extensions: [] }
+      };
+
+      // Installed apps
+      for (const appName of installed) {
+        const m = this.matchCategoryForName(appName);
+        if (m) categories[m.category].installed.push({ name: appName, match: m.match });
+      }
+
+      // Running processes
+      for (const p of processes) {
+        const candidate = this.normalizeName(`${p.name || ''} ${p.command || ''}`);
+        const m = this.matchCategoryForName(candidate);
+        if (m) {
+          categories[m.category].running.push({ name: p.name || 'unknown', pid: p.pid, match: m.match });
+        }
+      }
+
+      // Services
+      for (const s of services) {
+        const m = this.matchCategoryForName(s);
+        if (m) categories[m.category].services.push({ name: s, match: m.match });
+      }
+
+      // Browser extensions
+      for (const ext of extensions) {
+        if (ext.category && categories[ext.category]) {
+          categories[ext.category].extensions.push(ext);
+        }
+      }
+
+      const summary = {};
+      for (const [k, v] of Object.entries(categories)) {
+        summary[k] = {
+          installed: v.installed.length,
+          running: v.running.length,
+          services: v.services.length,
+          extensions: v.extensions.length
+        };
+      }
+
+      return { categories, summary, platform: process.platform };
+    } catch (e) {
+      return { error: String(e), platform: process.platform };
+    }
   }
 
   async safe(checkName, fn, timeoutMs = 3000) {

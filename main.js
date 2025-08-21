@@ -960,6 +960,16 @@ class SteppedScanManager {
   }
 }
 
+// IPC to list categorized threat applications (installed, running, services, browser extensions)
+ipcMain.handle('app:listThreatApps', async () => {
+  try {
+    const res = await securityService.listThreatApplications();
+    return { ok: true, ...res };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 const steppedScanManager = new SteppedScanManager();
 
 // Legacy scan function for compatibility with renderer.js
