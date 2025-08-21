@@ -18,6 +18,7 @@ class SecurityService extends EventEmitter {
 
     this.checkInterval = 20000;
 
+    // Only remote control / RDP-style tools here to avoid false positives
     this.remoteControlApps = [
       'teamviewer','tv_w32','tv_x64',
       'anydesk','anydesk.exe',
@@ -25,11 +26,8 @@ class SecurityService extends EventEmitter {
       'vnc','vncserver','vncviewer','realvnc','tightvnc','ultravnc','winvnc','vnc4server','x11vnc',
       'mstsc','rdp','remote desktop','terminal services','rdpclip','rdpinput','rdpsnd','rdpdr',
       'logmein','gotomypc','pchelper','remotepc','splashtop','dameware','radmin','ammyy','screenconnect','bomgar',
-      'remoteutilities','supremo','showmypc','chrome.exe --remote-debugging',
-      'vmware','virtualbox','vbox','qemu','kvm','hyperv',
-      'obs','camtasia','bandicam','fraps','screencast',
-      'zoom','skype','discord','slack','teams','webex','gotomeeting',
-      'chrome --remote-debugging','firefox --marionette','edge --remote-debugging'
+      'remoteutilities','supremo','showmypc','zoho assist',
+      'chrome.exe --remote-debugging'
     ];
 
     this.backgroundServices = [
@@ -52,6 +50,22 @@ class SecurityService extends EventEmitter {
     ];
 
     this.suspiciousPorts = [5900,5901,5902,5903,5904,3389,22,23,5938,7070,4899,5500,6129];
+  }
+
+  // Identify system helper processes we should exclude from threat reporting
+  isSystemHelper(processName, command) {
+    const name = String(processName || '').toLowerCase();
+    const cmd = String(command || '').toLowerCase();
+    if (!name && !cmd) return false;
+    // CoreAudio / Drivers / Kexts / HAL plugins
+    if (name.includes('.driver') || cmd.includes('.driver')) return true;
+    if (name.includes('kext') || cmd.includes('kext')) return true;
+    if (name.includes('coreaudio') || cmd.includes('coreaudio')) return true;
+    if (cmd.includes('/library/audio/plug-ins/hal')) return true;
+    // AirPlay helpers
+    if (name.includes('airplayxpchelper') || cmd.includes('airplayxpchelper')) return true;
+    if (name.includes('airplay') || cmd.includes('airplay')) return true;
+    return false;
   }
 
   getThreatPatterns() {
@@ -346,6 +360,11 @@ class SecurityService extends EventEmitter {
       const s = svc.toLowerCase();
       if (name.includes(s) || cmd.includes(s)) return true;
     }
+    // Treat drivers/kext/coreaudio helpers as background/system services
+    if (name.includes('.driver') || cmd.includes('.driver') || name.includes('kext') || cmd.includes('kext')) return true;
+    if (name.includes('coreaudio') || cmd.includes('coreaudio') || cmd.includes('/library/audio/plug-ins/hal')) return true;
+    // Exclude macOS AirPlay system helpers broadly
+    if (name.includes('airplayxpchelper') || cmd.includes('airplayxpchelper') || name.includes('airplay') || cmd.includes('airplay')) return true;
     if ((name.endsWith('d') && (name.includes('teamviewer') || name.includes('anydesk'))) ||
         cmd.includes('--service') || cmd.includes('--daemon') || cmd.includes('-d ') ||
         (cmd.includes('chrome') && (cmd.includes('--type=') && !cmd.includes('--type=renderer')))) {
@@ -398,22 +417,19 @@ class SecurityService extends EventEmitter {
         if (!p.name && !p.command) continue;
         const name = (p.name || '').toLowerCase();
         const cmd = (p.command || '').toLowerCase();
-        if (this.isBackgroundService(name, cmd)) continue;
         if (this.isInstallerContext(cmd)) continue;
 
         // Compare against executable basename when possible
         const firstToken = (p.command || '').split(/\s+/)[0] || '';
         const exeBase = path.basename(firstToken).toLowerCase();
 
-        const matchedApp = null; 
-        // this.remoteControlApps.find(app => {
-        //   const a = app.toLowerCase();
-        //   return name.includes(a) || exeBase.includes(a) || (cmd.includes(a) && !/\.(deb|rpm|msi|dmg)/.test(cmd));
-        // });
+        // Match against known remote-control and screen-sharing software
+        const matchedApp = this.remoteControlApps.find(app => {
+          const a = String(app || '').toLowerCase();
+          if (!a) return false;
+          return name.includes(a) || exeBase.includes(a) || (cmd.includes(a) && !/\.(deb|rpm|msi|dmg)/.test(cmd));
+        });
         if (!matchedApp) continue;
-
-        const isActiveUser = this.isActiveUserApplication(name, cmd);
-        const isActiveProc = this.isProcessActive(p);
 
         let appKey = matchedApp.toLowerCase();
         if (appKey.includes('teamviewer')) appKey = 'teamviewer';
@@ -421,6 +437,20 @@ class SecurityService extends EventEmitter {
         else if (appKey.includes('vnc')) appKey = 'vnc';
         else if (appKey.includes('chrome') && appKey.includes('remote')) appKey = 'chrome_remote';
 
+        // If it's a known remote-control app running as a service/daemon, still flag it
+        if (this.isBackgroundService(name, cmd)) {
+          threats.push({
+            type: 'remote_control_service',
+            severity: 'medium',
+            message: `Remote control service detected: ${this.getDisplayName(appKey)}`,
+            details: { pid: p.pid }
+          });
+          continue;
+        }
+
+        // Record even when minimized/background (still a security risk), excluding services/drivers above
+        const isActiveUser = this.isActiveUserApplication(name, cmd) || true; // allow minimized apps
+        const isActiveProc = this.isProcessActive(p) || true; // include background CPU/mem-low
         if (isActiveUser && isActiveProc) {
           const prev = detectedApps.get(appKey);
           const entry = {
@@ -431,14 +461,6 @@ class SecurityService extends EventEmitter {
             mem: p.pmem || 0
           };
           if (!prev || entry.cpu > prev.cpu) detectedApps.set(appKey, entry);
-        } else {
-          // Report as suspicious if matched but not active user app
-          threats.push({
-            type: 'suspicious_process',
-            severity: 'medium',
-            message: `Suspicious application detected: ${p.name}`,
-            details: { pid: p.pid, reason: 'matches remote-control list but not active UI app' }
-          });
         }
       }
 
@@ -465,6 +487,7 @@ class SecurityService extends EventEmitter {
         const cmd = (p.command || '').toLowerCase();
         // Do not skip based on activity; even idle apps are relevant
         if (this.isInstallerContext(cmd)) continue;
+        if (this.isSystemHelper(name, cmd)) continue;
         const match = this.suspiciousProcesses.find(s => name.includes(s.toLowerCase()) || cmd.includes(s.toLowerCase()));
         if (match) {
           threats.push({
@@ -482,11 +505,18 @@ class SecurityService extends EventEmitter {
   async checkSuspiciousNetworkConnections() {
     const threats = [];
     try {
-      const connections = await this.safe('net', () => si.networkConnections(), 3000);
+      const [connections, proc] = await Promise.all([
+        this.safe('net', () => si.networkConnections(), 3000),
+        this.safe('processes', () => si.processes(), 20000)
+      ]);
+      const byPid = new Map((proc.list || []).map(p => [p.pid, p]));
       for (const conn of connections) {
         const lp = Number(conn.localport);
         const pp = Number(conn.peerport);
         if (this.suspiciousPorts.includes(lp) || this.suspiciousPorts.includes(pp)) {
+          // Skip if owned by a known system helper process
+          const owner = byPid.get(conn.pid);
+          if (owner && this.isSystemHelper(owner.name, owner.command)) continue;
           threats.push({
             type: 'suspicious_network_connection',
             severity: 'high',
@@ -503,8 +533,8 @@ class SecurityService extends EventEmitter {
     let threats = [];
     try {
       const processes = await this.safe('processes', () => si.processes(), 4000);
-      const browsers = ['chrome','chromium','firefox','edge','brave','opera'];
-      const videoApps = ['zoom','teams','skype','webex','discord','slack'];
+      const browsers = ['chrome','chromium','firefox','edge','brave','opera','safari'];
+      const videoApps = ['zoom','teams','microsoft teams','skype','webex','discord','slack'];
       const browserProcs = [];
       const videoProcs = [];
       const livePidSet = new Set((processes.list || []).map(p => p.pid));
@@ -512,27 +542,27 @@ class SecurityService extends EventEmitter {
         if (!p || (!p.name && !p.command)) continue;
         const name = (p.name || '').toLowerCase();
         const cmd = (p.command || '').toLowerCase();
-        if (!this.isProcessActive(p)) continue;
+        if (this.isSystemHelper(name, cmd)) continue;
+        // Consider browsers/video apps even if minimized/idle
+        const isActiveEnough = this.isProcessActive(p) || browsers.some(b => name.includes(b)) || videoApps.some(a => name.includes(a));
+        if (!isActiveEnough) continue;
         if (browsers.some(b => name.includes(b))) browserProcs.push(p);
         if (videoApps.some(a => name.includes(a))) videoProcs.push(p);
-        for (const app of videoApps) if (name.includes(app)) {
-          threats.push({ type: 'video_conferencing_detected', severity: 'high', message: `Video conferencing app detected: ${p.name}`, details: { pid: p.pid } });
-        }
         if (browsers.some(b => name.includes(b))) {
           const flags = ['--enable-usermedia-screen-capturing','--auto-select-desktop-capture-source','--use-fake-ui-for-media-stream','--disable-web-security','--allow-running-insecure-content'];
           const hasFlags = flags.some(f => cmd.includes(f));
           if (hasFlags) {
-            threats.push({ type: 'browser_screen_sharing_detected', severity: 'critical', message: `Browser screen sharing indicators in ${p.name}`, details: { pid: p.pid } });
+            threats.push({ type: 'browser_screen_sharing_detected', severity: 'critical', message: `Browser screen sharing indicators in ${p.name}`, details: { pid: p.pid, name: p.name } });
           }
           if ((p.pcpu || 0) > 15) {
-            threats.push({ type: 'browser_high_cpu_usage', severity: 'medium', message: `Browser high CPU: ${p.name} (${p.pcpu}%)`, details: { pid: p.pid } });
+            threats.push({ type: 'browser_high_cpu_usage', severity: 'medium', message: `Browser high CPU: ${p.name} (${p.pcpu}%)`, details: { pid: p.pid, name: p.name } });
           }
         }
         // Dedicated screen capture tools
         if (/\bobs\b/.test(name) || /\bffmpeg\b/.test(name)) {
           const captureHints = ['x11grab','gdigrab','avfoundation','dshow','screen-capture','pipewire','xcbgrab'];
           if (captureHints.some(h => cmd.includes(h))) {
-            threats.push({ type: 'screen_capture_tool_detected', severity: 'critical', message: `Screen capture tool active: ${p.name}`, details: { pid: p.pid } });
+            threats.push({ type: 'screen_capture_tool_detected', severity: 'critical', message: `Screen capture tool active: ${p.name}`, details: { pid: p.pid, name: p.name } });
           }
         }
       }
@@ -606,7 +636,11 @@ class SecurityService extends EventEmitter {
   async detectChromeScreenSharing(chromeProcesses) {
     const threats = [];
     try {
-      const connections = await this.safe('net', () => si.networkConnections(), 3000);
+      const [connections, proc] = await Promise.all([
+        this.safe('net', () => si.networkConnections(), 3000),
+        this.safe('processes', () => si.processes(), 20000)
+      ]);
+      const byPidProc = new Map((proc.list || []).map(p => [p.pid, p]));
       const procByPid = new Map((chromeProcesses || []).map(p => [p.pid, p]));
       if (chromeProcesses.length > 12) {
         threats.push({ type: 'browser_multiple_processes', severity: 'low', message: `Multiple browser processes detected (${chromeProcesses.length})` });
@@ -616,13 +650,15 @@ class SecurityService extends EventEmitter {
         threats.push({ type: 'browser_high_memory_usage', severity: 'medium', message: `Browser using high memory (${totalMem.toFixed(1)}%)` });
       }
       for (const p of chromeProcesses) if ((p.pcpu || 0) > 20) {
-        threats.push({ type: 'browser_process_high_cpu', severity: 'medium', message: `${p.name} high CPU (${p.pcpu}%)`, details: { pid: p.pid } });
+        threats.push({ type: 'browser_process_high_cpu', severity: 'medium', message: `${p.name} high CPU (${p.pcpu}%)`, details: { pid: p.pid, name: p.name } });
       }
       const byPid = new Map();
       for (const c of (connections || [])) {
         if (c.protocol !== 'udp') continue;
         const pid = c.pid;
         if (!procByPid.has(pid)) continue;
+        const owner = byPidProc.get(pid);
+        if (owner && this.isSystemHelper(owner.name, owner.command)) continue;
         const highPort = (c.localport > 30000 && c.localport < 65535) || (c.peerport > 30000 && c.peerport < 65535);
         if (!highPort) continue;
         byPid.set(pid, (byPid.get(pid) || 0) + 1);
@@ -634,7 +670,7 @@ class SecurityService extends EventEmitter {
           type: 'screen_sharing_process_webrtc',
           severity: 'medium',
           message: `${name} possible screen sharing via WebRTC`,
-          details: { pid, connections: count }
+          details: { pid, name, connections: count }
         });
       }
     } catch {}
@@ -694,11 +730,12 @@ class SecurityService extends EventEmitter {
         if (looksLikeScreencast && (isBrowser || isVideoApp || appName.includes('xdg-desktop-portal'))) {
           if (pid && seenPid.has(pid)) continue;
           if (pid) seenPid.add(pid);
+          const appDisplay = props['application.name'] || clientById.get(clientId)?.rawName || '';
           threats.push({
             type: 'screen_sharing_process_pipewire',
             severity: 'critical',
-            message: `${props['application.name'] || clientById.get(clientId)?.rawName || 'Unknown app'} screencast active`,
-            details: { pid: pid || undefined, appName: props['application.name'] || clientById.get(clientId)?.rawName || '', node: props['node.description'] || props['node.name'] || '' }
+            message: `${appDisplay || 'Unknown app'} screencast active`,
+            details: { pid: pid || undefined, name: appDisplay, appName: appDisplay, node: props['node.description'] || props['node.name'] || '' }
           });
         }
       }
@@ -736,8 +773,8 @@ class SecurityService extends EventEmitter {
     const threats = [];
     try {
       const [graphicsRes, processesRes] = await Promise.allSettled([
-        this.safe('graphics', () => si.graphics(), 2000),
-        this.safe('processes', () => si.processes(), 2000)
+        this.safe('graphics', () => si.graphics(), 20000),
+        this.safe('processes', () => si.processes(), 20000)
       ]);
       const processes = (processesRes.value && processesRes.value.list) ? processesRes.value.list : [];
       const gpuIntensive = processes.filter(p => {
@@ -757,7 +794,7 @@ class SecurityService extends EventEmitter {
     const threats = [];
     if (process.platform !== 'darwin') return threats;
     try {
-      const { stdout } = await this.safe('tcc', () => execAsync('sqlite3 ~/Library/Application\ Support/com.apple.TCC/TCC.db "SELECT client FROM access WHERE service=\'kTCCServiceScreenCapture\' AND allowed=1;" 2>/dev/null || true'), 2000);
+      const { stdout } = await this.safe('tcc', () => execAsync('sqlite3 ~/Library/Application\ Support/com.apple.TCC/TCC.db "SELECT client FROM access WHERE service=\'kTCCServiceScreenCapture\' AND allowed=1;" 2>/dev/null || true'), 20000);
       if (stdout && stdout.trim()) {
         const apps = stdout.trim().split('\n').filter(Boolean);
         if (apps.length) threats.push({ type: 'screen_recording_permissions', severity: 'critical', message: `Apps with screen recording permissions (${apps.length})` });
@@ -769,7 +806,7 @@ class SecurityService extends EventEmitter {
   async detectClipboardSynchronization() {
     const threats = [];
     try {
-      const processes = await this.safe('processes', () => si.processes(), 2000);
+      const processes = await this.safe('processes', () => si.processes(), 20000);
       const list = (processes.list || []).filter(p => {
         const cmd = (p.command || '').toLowerCase();
         return cmd.includes('clipboard') || cmd.includes('xclip') || cmd.includes('pbcopy') || cmd.includes('pbpaste') ||
@@ -861,7 +898,7 @@ class SecurityService extends EventEmitter {
       }
       // Detect RDP clipboard/audio helpers if present
       try {
-        const proc = await this.safe('processes', () => si.processes(), 2000);
+        const proc = await this.safe('processes', () => si.processes(), 20000);
         for (const p of (proc.list || [])) {
           const n = String(p.name || '').toLowerCase();
           if (n === 'rdpclip.exe' || n.includes('rdpclip')) {
@@ -897,6 +934,103 @@ class SecurityService extends EventEmitter {
     return threats;
   }
 
+  // New: enumerate applications actively sharing screen (cross-OS best-effort)
+  async checkScreenSharingApplicationsActive() {
+    const threats = [];
+    try {
+      const proc = await this.safe('processes', () => si.processes(), 4000);
+      const list = (proc.list || []);
+      const candidates = ['chrome','chromium','msedge','edge','brave','firefox','safari','zoom','teams','microsoft teams','webex','meet','discord','slack','obs'];
+      const seen = new Set();
+      for (const p of list) {
+        const name = (p.name || '').toLowerCase();
+        const cmd = (p.command || '').toLowerCase();
+        if (!name && !cmd) continue;
+        if (this.isSystemHelper(name, cmd) || this.isInstallerContext(cmd)) continue;
+        const match = candidates.find(c => name.includes(c) || cmd.includes(c));
+        if (!match) continue;
+        const key = match.includes('microsoft teams') ? 'teams' : match;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const display = this.getDisplayNameForApp(match, p.name);
+        threats.push({ type: 'screen_sharing_app_candidate', severity: 'low', message: `App capable of screen sharing detected: ${display}`, details: { pid: p.pid, name: p.name } });
+      }
+
+      // Linux PipeWire active screencast already handled; this consolidates per-app listing based on processes present
+    } catch {}
+    return threats;
+  }
+
+  // New: enumerate apps which have screen sharing permission (OS-specific)
+  async checkScreenSharingPermissions() {
+    const threats = [];
+    try {
+      if (process.platform === 'darwin') {
+        // macOS TCC database for screen capture permission
+        try {
+          const { stdout } = await this.safe('tcc', () => execAsync('sqlite3 ~/Library/Application\ Support/com.apple.TCC/TCC.db "SELECT client FROM access WHERE service=\'kTCCServiceScreenCapture\' AND allowed=1;" 2>/dev/null || true'), 3000);
+          if (stdout && stdout.trim()) {
+            const apps = stdout.trim().split('\n').filter(Boolean);
+            for (const a of apps) threats.push({ type: 'screen_sharing_permission', severity: 'low', message: `App has screen recording permission: ${a}`, details: { name: a } });
+          }
+        } catch {}
+      } else if (process.platform === 'win32') {
+        // Windows: no single central permission; note capabilities based on running apps
+        try {
+          const proc = await this.safe('processes', () => si.processes(), 2000);
+          const list = (proc.list || []);
+          const apps = ['teams','msteams','microsoft teams','zoom','webex','chrome','edge','firefox','brave','obs','discord','slack'];
+          const seen = new Set();
+          for (const p of list) {
+            const n = (p.name || '').toLowerCase();
+            const c = (p.command || '').toLowerCase();
+            const m = apps.find(x => n.includes(x) || c.includes(x));
+            if (!m) continue; const key = m.includes('microsoft teams') ? 'teams' : m; if (seen.has(key)) continue; seen.add(key);
+            threats.push({ type: 'screen_sharing_permission_inferred', severity: 'low', message: `Likely has screen sharing permission: ${p.name}`, details: { name: p.name } });
+          }
+        } catch {}
+      } else {
+        // Linux: permissions are session-portal scoped; list portal usage via PipeWire if present
+        try {
+          const pipe = await this.detectPipeWireScreencast();
+          for (const t of pipe) threats.push({ type: 'screen_sharing_permission_inferred', severity: 'low', message: `Portal access detected: ${t.details?.name || 'Unknown'}`, details: { name: t.details?.name || '' } });
+        } catch {}
+      }
+    } catch {}
+    return threats;
+  }
+
+  getDisplayNameForApp(match, fallback) {
+    const map = new Map([
+      ['teams','Microsoft Teams'], ['microsoft teams','Microsoft Teams'], ['ms teams','Microsoft Teams'], ['msteams','Microsoft Teams'],
+      ['zoom','Zoom'], ['skype','Skype'], ['webex','Webex'], ['discord','Discord'], ['slack','Slack'],
+      ['chrome','Chrome'], ['chromium','Chromium'], ['edge','Edge'], ['msedge','Edge'], ['brave','Brave'], ['firefox','Firefox'], ['safari','Safari'], ['meet','Google Meet']
+    ]);
+    const key = String(match || '').toLowerCase();
+    return map.get(key) || fallback || match || '';
+  }
+  async checkMessagingApplications() {
+    const threats = [];
+    try {
+      const proc = await this.safe('processes', () => si.processes(), 4000);
+      const apps = ['teams','microsoft teams','discord','slack','zoom','skype','webex'];
+      for (const p of (proc.list || [])) {
+        const name = (p.name || '').toLowerCase();
+        const cmd = (p.command || '').toLowerCase();
+        if (this.isSystemHelper(name, cmd) || this.isInstallerContext(cmd)) continue;
+        const matched = apps.find(a => name.includes(a) || cmd.includes(a));
+        if (!matched) continue;
+        threats.push({
+          type: 'messaging_app_detected',
+          severity: 'medium',
+          message: `Messaging/meeting app detected: ${p.name}`,
+          details: { pid: p.pid }
+        });
+      }
+    } catch {}
+    return threats;
+  }
+
   async runAllChecks(signatures) {
     const results = await Promise.allSettled([
       this.checkRemoteControlApplications(),
@@ -905,7 +1039,6 @@ class SecurityService extends EventEmitter {
       this.checkScreenSharingIndicators(),
       this.analyzeNetworkTrafficPatterns(),
       this.detectActiveScreenCapture(),
-      this.detectMacOSScreenRecording(),
       this.detectClipboardSynchronization(),
       this.checkVirtualMachine(),
       this.checkMaliciousSignatures(signatures),

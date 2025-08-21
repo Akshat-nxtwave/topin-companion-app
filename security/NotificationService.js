@@ -129,6 +129,14 @@ class NotificationService {
   async #buildActiveBrowserHints() {
     const proc = await si.processes();
     const excludeCmdPatterns = ['--type=renderer','--type=gpu-process','--type=utility','--type=zygote','--type=broker','crashpad','crashpad_handler','zygote','utility','broker','extension','devtools','headless'];
+    const excludeDrivers = (p) => {
+      const n = p.nameLower || '';
+      const c = p.command || '';
+      if (n.includes('.driver') || c.includes('.driver') || n.includes('kext') || c.includes('kext') || c.includes('/library/audio/plug-ins/hal') || n.includes('coreaudio') || c.includes('coreaudio')) return true;
+      // Exclude macOS AirPlay system helpers broadly
+      if (n.includes('airplayxpchelper') || c.includes('airplayxpchelper') || n.includes('airplay') || c.includes('airplay')) return true;
+      return false;
+    };
     const list = (proc.list || []).map(p => ({ name: String(p.name || ''), cmd: String(p.command || ''), nameLower: String(p.name || '').toLowerCase(), cmdLower: String(p.command || '').toLowerCase(), cpu: Number(p.pcpu) || 0, mem: Number(p.pmem) || 0, state: String(p.state || '').toLowerCase() }));
     const isActive = (p) => (p.cpu >= 1) || (p.mem >= 1.5) || ['running','r'].includes(p.state);
     const notHelper = (p) => !excludeCmdPatterns.some(x => p.cmdLower.includes(x) || p.nameLower.includes(x));
@@ -310,6 +318,11 @@ class NotificationService {
       'slack','discord','teams','ms-teams','msteams','microsoft teams','skype','zoom','whatsapp','telegram','signal','thunderbird','outlook','spotify','clickup'
     ];
     const excludeCmdPatterns = ['--type=renderer','--type=gpu-process','--type=utility','--type=zygote','--type=broker','crashpad','crashpad_handler','zygote','utility','broker','extension','devtools','headless'];
+    const excludeDrivers = (p) => {
+      const n = p.nameLower || '';
+      const c = p.command || '';
+      return n.includes('.driver') || c.includes('.driver') || n.includes('kext') || c.includes('kext') || c.includes('/library/audio/plug-ins/hal') || n.includes('coreaudio') || c.includes('coreaudio');
+    };
 
     const list = (proc.list || []).map(p => ({ pid: p.pid, ppid: p.parentPid || p.ppid, name: String(p.name || ''), nameLower: String(p.name || '').toLowerCase(), path: p.path, user: p.user, cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0, mem: Number.isFinite(p.pmem) ? p.pmem : 0, state: (p.state || '').toLowerCase(), command: String(p.command || '').toLowerCase() }));
 
@@ -323,9 +336,14 @@ class NotificationService {
       const matchedApp = appCandidates.find(c => p.nameLower.includes(c) || p.command.includes(c));
       const isApp = Boolean(matchedApp);
       if (!isBrowser && !isApp) return false;
+      // Always include recognized UI apps (WhatsApp/Telegram/etc.) even if helper processes have renderer/gpu flags
+      if (isApp) return true;
+      // For browsers and others, exclude known helper/utility processes
       if (excludeCmdPatterns.some(x => p.command.includes(x) || p.nameLower.includes(x))) return false;
       // Exclude webview helpers always
       if (p.nameLower.includes('webview') || p.command.includes('webview')) return false;
+      // Exclude CoreAudio/driver/kext processes to avoid false positives
+      if (excludeDrivers(p)) return false;
       // Updater/Update helpers: keep only if they clearly launch a known app (e.g., Update.exe --processStart "Teams.exe")
       const isUpdaterProc = p.nameLower.includes('updater') || p.command.includes('updater') || p.nameLower.includes('update.exe') || (/\\update\.exe/.test(p.command));
       if ((p.nameLower.includes('update') || isUpdaterProc)) {
@@ -336,8 +354,6 @@ class NotificationService {
           return false;
         }
       }
-      // Always include recognized UI apps (Teams/Slack/etc.) even when idle, since Windows may report them as sleeping
-      if (isApp) return true;
       // For browsers, keep only meaningfully active ones
       const isActiveBrowser = (p.cpu >= 0.5) || (p.mem >= 1) || ['running','r'].includes(p.state) || p.state === '';
       return isActiveBrowser;

@@ -19,6 +19,49 @@ function setNotifStatus(status){
 let isChecking = false;
 let unsubscribeAutoScan = null;
 
+// Determine the best label to display for a threat's target application
+function resolveThreatTarget(threat, processes){
+  try {
+    if (!threat) return '';
+    const nameFromThreat = (threat.details && threat.details.name) || threat.name;
+    if (nameFromThreat) return String(nameFromThreat);
+
+    const pid = (threat.details && threat.details.pid) || threat.pid;
+    if (pid && Array.isArray(processes)) {
+      const proc = processes.find(p => p && p.pid === pid);
+      if (proc && proc.name) return `${proc.name}`;
+    }
+
+    const port = (threat.details && threat.details.port) || threat.port;
+    if (port) return `port ${port}`;
+
+    const message = String(threat.message || '');
+    if (message.includes(':')) {
+      const part = message.split(':').pop().trim();
+      if (part) return part;
+    }
+  } catch {}
+  return '';
+}
+
+function normalizeAppDisplay(name){
+  const n = String(name || '').trim();
+  if (!n) return '';
+  const lower = n.toLowerCase();
+  const map = new Map([
+    ['microsoft teams', 'Microsoft Teams'], ['teams', 'Microsoft Teams'], ['ms teams', 'Microsoft Teams'],
+    ['discord', 'Discord'], ['slack', 'Slack'], ['zoom', 'Zoom'], ['skype', 'Skype'], ['webex', 'Webex'],
+    ['google chrome', 'Chrome'], ['chrome', 'Chrome'], ['chromium', 'Chromium'], ['brave', 'Brave'], ['msedge', 'Edge'], ['edge', 'Edge'], ['firefox', 'Firefox']
+  ]);
+  for (const [k, v] of map.entries()) if (lower.includes(k)) return v;
+  return n.charAt(0).toUpperCase() + n.slice(1);
+}
+
+function severityRank(s){
+  const m = { critical: 4, high: 3, medium: 2, low: 1 };
+  return m[String(s || '').toLowerCase()] || 0;
+}
+
 async function runSystemCheck(){
   if (isChecking) return;
   isChecking = true;
@@ -37,10 +80,34 @@ async function runSystemCheck(){
     // Step 1: Security scan (threats & malicious)
     const report = res.security;
     if (Array.isArray(report?.threats) && report.threats.length > 0) {
-      const rows = report.threats.slice(0, 50).map(t => `<tr><td>${t.type}</td><td>${t.message || ''}</td><td>${t.name || t.port || ''}</td></tr>`).join('');
+      // Aggregate by application so we show one row per app
+      const processes = report.processes || [];
+      const agg = new Map();
+      for (const t of report.threats) {
+        const targetRaw = resolveThreatTarget(t, processes);
+        const target = String(targetRaw || '').trim();
+        if (!target) continue;
+        const key = target.toLowerCase();
+        const display = normalizeAppDisplay(target);
+        const rank = severityRank(t.severity);
+        const cur = agg.get(key) || { app: display, type: t.type, message: t.message || '', severity: t.severity, rank: rank, reasons: new Set() };
+        cur.reasons.add(t.message || t.type || '');
+        if (rank > (cur.rank || 0)) {
+          cur.type = t.type;
+          cur.message = t.message || cur.message;
+          cur.severity = t.severity;
+          cur.rank = rank;
+        }
+        agg.set(key, cur);
+      }
+      const rows = Array.from(agg.values()).slice(0, 50).map(item => {
+        const reasons = Array.from(item.reasons).filter(Boolean);
+        const reasonText = reasons.length > 1 ? `${item.message} (+${reasons.length - 1} more)` : (item.message || '');
+        return `<tr><td>${item.type}</td><td>${reasonText}</td><td>${item.app}</td></tr>`;
+      }).join('');
       const table = `
 <table class="table">
-  <thead><tr><th>Type</th><th>Message</th><th>Target</th></tr></thead>
+  <thead><tr><th>Type</th><th>Message</th><th>Application</th></tr></thead>
   <tbody>${rows}</tbody>
 </table>`;
       suspiciousListEl.innerHTML = table;
