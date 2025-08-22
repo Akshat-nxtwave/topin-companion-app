@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('companion', {
   sendToClients: (data) => ipcRenderer.invoke('app:sendToClients', data),
   getServerStatus: () => ipcRenderer.invoke('app:getServerStatus'),
   checkBrowserTabPermissions: () => ipcRenderer.invoke('app:checkBrowserTabPermissions'),
+  testTabDetection: (browserName) => ipcRenderer.invoke('app:testTabDetection', browserName),
   onWebSocketMessage: (handler) => {
     const listener = (_evt, message) => handler(message);
     ipcRenderer.on('websocket:message', listener);

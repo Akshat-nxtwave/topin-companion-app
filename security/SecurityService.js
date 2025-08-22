@@ -27,7 +27,7 @@ class SecurityService extends EventEmitter {
       'chrome_remote','remotedesktop','chrome_remote_desktop',
       'vnc','vncserver','vncviewer','realvnc','tightvnc','ultravnc','winvnc','vnc4server','x11vnc',
       'mstsc','rdp','remote desktop','terminal services','rdpclip','rdpinput','rdpsnd','rdpdr',
-      'logmein','gotomypc','pchelper','remotepc','splashtop','dameware','radmin','ammyy','screenconnect','bomgar',
+      'logmein','gotomypc','remotepc','splashtop','dameware','radmin','ammyy','screenconnect','bomgar',
       'remoteutilities','supremo','showmypc','zoho assist',
       'chrome.exe --remote-debugging'
     ];
@@ -52,6 +52,22 @@ class SecurityService extends EventEmitter {
     ];
 
     this.suspiciousPorts = [5900,5901,5902,5903,5904,3389,22,23,5938,7070,4899,5500,6129];
+  }
+
+  async testTabDetection(browserName = 'firefox') {
+    console.log(`🧪 Testing tab detection for ${browserName}...`);
+    try {
+      const allTabs = await this.getAllTabsForBrowser(browserName);
+      console.log(`🧪 Found ${allTabs.length} sharing tabs:`, allTabs);
+      
+      const tabInfo = await this.resolveSharingTabInfoForBrowser(browserName);
+      console.log(`🧪 Single tab info:`, tabInfo);
+      
+      return { allTabs, tabInfo };
+    } catch (e) {
+      console.error(`🧪 Test failed:`, e);
+      return { error: String(e) };
+    }
   }
 
   async checkBrowserTabAccessPermissions() {
@@ -182,14 +198,23 @@ class SecurityService extends EventEmitter {
     const name = String(processName || '').toLowerCase();
     const cmd = String(command || '').toLowerCase();
     if (!name && !cmd) return false;
+    
+    // Check for AirPlay helpers first (more specific)
+    if (name.includes('airplayxpchelper') || cmd.includes('airplayxpchelper')) {
+      console.log(`🔧 Excluding AirPlayXPCHelper: ${processName}`);
+      return true;
+    }
+    if (name.includes('airplay') || cmd.includes('airplay')) {
+      console.log(`🔧 Excluding AirPlay process: ${processName}`);
+      return true;
+    }
+    
     // CoreAudio / Drivers / Kexts / HAL plugins
     if (name.includes('.driver') || cmd.includes('.driver')) return true;
     if (name.includes('kext') || cmd.includes('kext')) return true;
     if (name.includes('coreaudio') || cmd.includes('coreaudio')) return true;
     if (cmd.includes('/library/audio/plug-ins/hal')) return true;
-    // AirPlay helpers
-    if (name.includes('airplayxpchelper') || cmd.includes('airplayxpchelper')) return true;
-    if (name.includes('airplay') || cmd.includes('airplay')) return true;
+    
     return false;
   }
 
@@ -543,6 +568,12 @@ class SecurityService extends EventEmitter {
         const name = (p.name || '').toLowerCase();
         const cmd = (p.command || '').toLowerCase();
         if (this.isInstallerContext(cmd)) continue;
+        
+        // Skip system helpers like AirPlayXPCHelper
+        if (this.isSystemHelper(name, cmd)) {
+          console.log(`🔧 Skipping system helper in remote control check: ${p.name}`);
+          continue;
+        }
 
         // Compare against executable basename when possible
         const firstToken = (p.command || '').split(/\s+/)[0] || '';
@@ -552,7 +583,11 @@ class SecurityService extends EventEmitter {
         const matchedApp = this.remoteControlApps.find(app => {
           const a = String(app || '').toLowerCase();
           if (!a) return false;
-          return name.includes(a) || exeBase.includes(a) || (cmd.includes(a) && !/\.(deb|rpm|msi|dmg)/.test(cmd));
+          const matches = name.includes(a) || exeBase.includes(a) || (cmd.includes(a) && !/\.(deb|rpm|msi|dmg)/.test(cmd));
+          if (matches && name.includes('airplay')) {
+            console.log(`🔧 AirPlay process ${p.name} matched remote control pattern "${app}" but should be excluded`);
+          }
+          return matches;
         });
         if (!matchedApp) continue;
 
@@ -663,6 +698,7 @@ class SecurityService extends EventEmitter {
       const browserProcs = [];
       const videoProcs = [];
       const livePidSet = new Set((processes.list || []).map(p => p.pid));
+      console.log(`🔍 Screen sharing check - found ${processes.list?.length || 0} processes`);
       for (const p of (processes.list || [])) {
         if (!p || (!p.name && !p.command)) continue;
         const name = (p.name || '').toLowerCase();
@@ -671,8 +707,29 @@ class SecurityService extends EventEmitter {
         // Consider browsers/video apps even if minimized/idle
         const isActiveEnough = this.isProcessActive(p) || browsers.some(b => name.includes(b)) || videoApps.some(a => name.includes(a));
         if (!isActiveEnough) continue;
-        if (browsers.some(b => name.includes(b))) browserProcs.push(p);
-        if (videoApps.some(a => name.includes(a))) videoProcs.push(p);
+        if (browsers.some(b => name.includes(b))) {
+          // Check system helper first
+          if (this.isSystemHelper(name, cmd)) {
+            console.log(`🔧 Skipping system helper that matches browser pattern: ${p.name} (PID: ${p.pid})`);
+            continue;
+          }
+          
+          // Filter out helper processes and agents - only keep main browser processes
+          const isMainBrowser = !name.includes('helper') && !name.includes('agent') && 
+                                !name.includes('crashpad') && !name.includes('spotlight') &&
+                                !name.includes('knowledge') && !name.includes('sync') &&
+                                !name.includes('notification') && !name.includes('search');
+          if (isMainBrowser) {
+            console.log(`🌐 Found main browser: ${p.name} (PID: ${p.pid})`);
+            browserProcs.push(p);
+          } else {
+            console.log(`🔧 Skipping browser helper: ${p.name} (PID: ${p.pid})`);
+          }
+        }
+        if (videoApps.some(a => name.includes(a))) {
+          console.log(`📹 Found video app: ${p.name} (PID: ${p.pid})`);
+          videoProcs.push(p);
+        }
         if (browsers.some(b => name.includes(b))) {
           const flags = ['--enable-usermedia-screen-capturing','--auto-select-desktop-capture-source','--use-fake-ui-for-media-stream','--disable-web-security','--allow-running-insecure-content'];
           const hasFlags = flags.some(f => cmd.includes(f));
@@ -692,8 +749,43 @@ class SecurityService extends EventEmitter {
         }
       }
 
-      if (browserProcs.length > 0) threats.push(...await this.detectChromeScreenSharing(browserProcs));
-      if (videoProcs.length > 0) threats.push(...await this.detectChromeScreenSharing(videoProcs));
+      console.log(`🔍 Processing ${browserProcs.length} browser processes and ${videoProcs.length} video app processes`);
+      if (browserProcs.length > 0) {
+        const browserThreats = await this.detectChromeScreenSharing(browserProcs);
+        console.log(`🔍 Browser WebRTC detection returned ${browserThreats.length} threats`);
+        threats.push(...browserThreats);
+      }
+      if (videoProcs.length > 0) {
+        const videoThreats = await this.detectChromeScreenSharing(videoProcs);
+        console.log(`🔍 Video app WebRTC detection returned ${videoThreats.length} threats`);
+        threats.push(...videoThreats);
+      }
+      
+      // Even without WebRTC activity, check for sharing tabs directly
+      console.log(`🔍 Checking for sharing tabs directly without WebRTC requirement...`);
+      for (const p of browserProcs) {
+        try {
+          const name = (p.name || '').toLowerCase();
+          const allSharingTabs = await this.getAllTabsForBrowser(name);
+          if (allSharingTabs.length > 0) {
+            console.log(`🎯 Found ${allSharingTabs.length} sharing tabs in ${p.name} without WebRTC`);
+            threats.push({
+              type: 'screen_sharing_tabs_detected',
+              severity: allSharingTabs.length > 1 ? 'high' : 'medium',
+              message: `${p.name} has ${allSharingTabs.length} tab${allSharingTabs.length > 1 ? 's' : ''} with screen sharing content`,
+              details: { 
+                pid: p.pid, 
+                name: p.name,
+                sharingTabs: allSharingTabs,
+                tabCount: allSharingTabs.length,
+                detectionMethod: 'direct_tab_scan'
+              }
+            });
+          }
+        } catch (e) {
+          console.error(`❌ Direct tab check failed for ${p.name}:`, e);
+        }
+      }
 
       let activeScreencastPids = new Set();
       if (process.platform === 'linux') {
@@ -782,8 +874,9 @@ class SecurityService extends EventEmitter {
         byPid.set(pid, (byPid.get(pid) || 0) + 1);
       }
 
-      // Fallback if systeminformation provides no UDP rows
-      if (byPid.size === 0) {
+      // Always try fallback methods as systeminformation UDP detection is unreliable
+      console.log(`🔍 Trying fallback UDP detection methods...`);
+      if (byPid.size === 0 || true) {
         if (process.platform === 'win32') {
           try {
             const { stdout } = await execAsync('netstat -ano -p udp');
@@ -807,36 +900,57 @@ class SecurityService extends EventEmitter {
             }
           } catch {}
         } else {
+          // macOS/Linux - use lsof for UDP connections
           try {
             const { stdout } = await execAsync('lsof -nP -i UDP 2>/dev/null || true');
+            console.log(`🔍 lsof UDP output lines: ${stdout ? stdout.split('\n').length : 0}`);
             if (stdout && stdout.trim()) {
               const lines = stdout.split(/\r?\n/).slice(1);
+              let foundConnections = 0;
               for (const line of lines) {
                 const cols = line.trim().split(/\s+/);
                 if (cols.length < 9) continue;
                 const pid = Number(cols[1]) || 0;
-                if (!procByPid.has(pid)) continue;
+                const command = cols[0] || '';
                 const nameCol = cols.slice(8).join(' ');
-                const m = nameCol.match(/:(\d+)(?:->|\s|$)/);
-                const port = m ? Number(m[1]) : 0;
-                const owner = byPidProc.get(pid);
-                if (owner && this.isSystemHelper(owner.name, owner.command)) continue;
-                if (port > 30000 || stunPorts.has(port)) {
-                  byPid.set(pid, (byPid.get(pid) || 0) + 1);
+                
+                // Extract port from the address column (usually like *:port or ip:port)
+                let port = 0;
+                const m = nameCol.match(/:(\d+)(?:->|$|\s)/);
+                if (m) port = Number(m[1]);
+                
+                console.log(`🔍 UDP connection: ${command} (PID: ${pid}) port: ${port}`);
+                
+                // Check if this PID matches any of our browser processes
+                if (procByPid.has(pid)) {
+                  const owner = byPidProc.get(pid);
+                  if (owner && this.isSystemHelper(owner.name, owner.command)) continue;
+                  
+                  // Count high ports and STUN/TURN ports
+                  if (port > 30000 || stunPorts.has(port)) {
+                    byPid.set(pid, (byPid.get(pid) || 0) + 1);
+                    foundConnections++;
+                    console.log(`✅ Counted UDP for PID ${pid} (${command}) port ${port} - total: ${byPid.get(pid)}`);
+                  }
                 }
               }
+              console.log(`🔍 Found ${foundConnections} relevant UDP connections`);
             }
-          } catch {}
+          } catch (e) {
+            console.error(`❌ lsof UDP detection failed:`, e);
+          }
         }
       }
       const now = Date.now();
       const sticky = this.sharingStickyMs || 0;
+      console.log(`🔍 WebRTC detection found ${byPid.size} processes with UDP activity`);
       for (const [pid, count] of byPid) {
         const p = procByPid.get(pid);
         const name = p?.name || 'browser';
         const owner = byPidProc.get(pid);
         const cpu = Number(owner?.pcpu || 0);
         const lowerName = String(name || '').toLowerCase();
+        console.log(`🔍 Checking PID ${pid}: ${name} (${count} UDP connections, ${cpu}% CPU)`);
         const isNativeMeetingApp = /zoom|teams|microsoft teams|webex|discord/.test(lowerName);
         // Heuristic:
         // - Browsers: substantial UDP traffic or UDP+CPU (likely a sharing tab)
@@ -850,14 +964,48 @@ class SecurityService extends EventEmitter {
           likelySharing = true;
         }
         let tabInfo = null;
-        try { tabInfo = await this.resolveSharingTabInfoForBrowser(lowerName); } catch {}
-        // For browsers, require an active sharing tab match; for native meeting apps allow without tab info
-        if (!isNativeMeetingApp && !(tabInfo && tabInfo.title)) continue;
+        let allSharingTabs = [];
+        try { 
+          // Get comprehensive tab list for all browsers
+          allSharingTabs = await this.getAllTabsForBrowser(lowerName);
+          // Fallback to single tab detection if comprehensive method fails
+          if (allSharingTabs.length === 0) {
+            tabInfo = await this.resolveSharingTabInfoForBrowser(lowerName);
+          }
+        } catch {}
+        
+        // For browsers, require either comprehensive tab list or single tab info or substantial WebRTC activity
+        const isChromiumBased = /(chrome|chromium|edge|brave|opera)/.test(lowerName);
+        const hasTabEvidence = allSharingTabs.length > 0 || (tabInfo && tabInfo.title);
+        console.log(`🔍 PID ${pid} (${name}): isNativeMeetingApp=${isNativeMeetingApp}, hasTabEvidence=${hasTabEvidence}, likelySharing=${likelySharing}, allSharingTabs=${allSharingTabs.length}, tabInfo=${!!tabInfo}`);
+        if (!isNativeMeetingApp && !hasTabEvidence && !likelySharing) {
+          console.log(`❌ PID ${pid} (${name}): Skipping - no evidence of sharing`);
+          continue;
+        }
+        
+        // Build comprehensive message with all sharing tabs
+        let message = `${name} possible screen sharing via WebRTC`;
+        let details = { pid, name, connections: count };
+        
+        if (allSharingTabs.length > 0) {
+          // List all sharing tabs for non-Chromium browsers
+          const tabTitles = allSharingTabs.map(tab => tab.title || tab.url || 'Unknown tab').slice(0, 3);
+          message += ` (${allSharingTabs.length} sharing tab${allSharingTabs.length > 1 ? 's' : ''}: ${tabTitles.join(', ')})`;
+          if (allSharingTabs.length > 3) message += ` +${allSharingTabs.length - 3} more`;
+          details.sharingTabs = allSharingTabs;
+          details.tabCount = allSharingTabs.length;
+        } else if (tabInfo && tabInfo.title) {
+          // Single tab info for Chromium browsers
+          message += ` (tab: ${tabInfo.title})`;
+          details.tabTitle = tabInfo.title;
+          details.tabUrl = tabInfo.url;
+        }
+        
         threats.push({
           type: 'screen_sharing_process_webrtc',
-          severity: 'medium',
-          message: `${name} possible screen sharing via WebRTC${tabInfo && tabInfo.title ? ` (tab: ${tabInfo.title})` : ''}`,
-          details: { pid, name, connections: count, tabTitle: tabInfo?.title || undefined, tabUrl: tabInfo?.url || undefined }
+          severity: allSharingTabs.length > 1 ? 'high' : 'medium',
+          message,
+          details
         });
         this.recentSharingByPid.set(pid, { timestamp: now });
       }
@@ -865,8 +1013,212 @@ class SecurityService extends EventEmitter {
     return threats;
   }
 
+  async getAllTabsForBrowser(browserName) {
+    const allTabs = [];
+    const keywords = ['meet','zoom','teams','webex','discord','present','is presenting','sharing','share this tab','screen share','screenshare','sharing screen','sharing your screen','you are sharing','screen sharing','screen-sharing','jitsi','whereby','appear.in','hang','call','video call','conference'];
+    const domains = this.screenSharingDomains || [];
+    const matches = (text) => {
+      const t = String(text || '').toLowerCase();
+      return domains.some(d => t.includes(d)) || keywords.some(k => t.includes(k));
+    };
+
+    console.log(`🔍 getAllTabsForBrowser called for: ${browserName} on ${process.platform}`);
+
+    try {
+      if (process.platform === 'darwin') {
+        if (browserName.includes('firefox')) {
+          try {
+            // Get all Firefox windows and tabs
+            const script = `
+              tell application "Firefox"
+                set tabList to {}
+                repeat with w from 1 to count of windows
+                  repeat with t from 1 to count of tabs of window w
+                    set tabURL to URL of tab t of window w
+                    set tabName to name of tab t of window w
+                    set end of tabList to {tabURL, tabName, w, t}
+                  end repeat
+                end repeat
+                return tabList
+              end tell
+            `;
+            const { stdout } = await execAsync(`osascript -e '${script}'`);
+            console.log(`🦊 Firefox AppleScript output:`, stdout);
+            if (stdout && stdout.trim()) {
+              // Parse AppleScript list format
+              const tabData = stdout.trim();
+              // Simple parsing for Firefox tabs - this is a basic implementation
+              const tabMatches = tabData.match(/\{([^}]+)\}/g) || [];
+              console.log(`🦊 Firefox tab matches found: ${tabMatches.length}`);
+              for (const match of tabMatches) {
+                const parts = match.slice(1, -1).split(', ');
+                if (parts.length >= 2) {
+                  const url = parts[0];
+                  const title = parts[1];
+                  const isSharing = matches(url) || matches(title);
+                  console.log(`🦊 Firefox tab: ${title} | ${url} | sharing: ${isSharing}`);
+                  if (isSharing) {
+                    allTabs.push({ url, title, windowIndex: parts[2] || 1, tabIndex: parts[3] || 1, isSharing: true });
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+
+        if (browserName.includes('safari')) {
+          try {
+            // Get all Safari tabs across all windows
+            const script = `
+              tell application "Safari"
+                set tabList to {}
+                repeat with w from 1 to count of windows
+                  repeat with t from 1 to count of tabs of window w
+                    set tabURL to URL of tab t of window w
+                    set tabName to name of tab t of window w
+                    set end of tabList to tabURL & "|||" & tabName & "|||" & w & "|||" & t
+                  end repeat
+                end repeat
+                return tabList
+              end tell
+            `;
+            const { stdout } = await execAsync(`osascript -e '${script}'`);
+            if (stdout && stdout.trim()) {
+              const lines = stdout.trim().split('\n');
+              for (const line of lines) {
+                if (line.includes('|||')) {
+                  const [url, title, windowIndex, tabIndex] = line.split('|||');
+                  const isSharing = matches(url) || matches(title);
+                  if (isSharing) {
+                    allTabs.push({ url, title, windowIndex: Number(windowIndex) || 1, tabIndex: Number(tabIndex) || 1, isSharing: true });
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+
+        // For Chromium browsers, get all tabs across all windows
+        if (browserName.includes('chrome') || browserName.includes('chromium')) {
+          try {
+            const script = `
+              tell application "Google Chrome"
+                set tabList to {}
+                repeat with w from 1 to count of windows
+                  repeat with t from 1 to count of tabs of window w
+                    set tabURL to URL of tab t of window w
+                    set tabTitle to title of tab t of window w
+                    set end of tabList to tabURL & "|||" & tabTitle & "|||" & w & "|||" & t
+                  end repeat
+                end repeat
+                return tabList
+              end tell
+            `;
+            const { stdout } = await execAsync(`osascript -e '${script}'`);
+            if (stdout && stdout.trim()) {
+              const lines = stdout.trim().split('\n');
+              for (const line of lines) {
+                if (line.includes('|||')) {
+                  const [url, title, windowIndex, tabIndex] = line.split('|||');
+                  const isSharing = matches(url) || matches(title);
+                  if (isSharing) {
+                    allTabs.push({ url, title, windowIndex: Number(windowIndex) || 1, tabIndex: Number(tabIndex) || 1, isSharing: true });
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+
+        if (browserName.includes('edge')) {
+          try {
+            const script = `
+              tell application "Microsoft Edge"
+                set tabList to {}
+                repeat with w from 1 to count of windows
+                  repeat with t from 1 to count of tabs of window w
+                    set tabURL to URL of tab t of window w
+                    set tabTitle to title of tab t of window w
+                    set end of tabList to tabURL & "|||" & tabTitle & "|||" & w & "|||" & t
+                  end repeat
+                end repeat
+                return tabList
+              end tell
+            `;
+            const { stdout } = await execAsync(`osascript -e '${script}'`);
+            if (stdout && stdout.trim()) {
+              const lines = stdout.trim().split('\n');
+              for (const line of lines) {
+                if (line.includes('|||')) {
+                  const [url, title, windowIndex, tabIndex] = line.split('|||');
+                  const isSharing = matches(url) || matches(title);
+                  if (isSharing) {
+                    allTabs.push({ url, title, windowIndex: Number(windowIndex) || 1, tabIndex: Number(tabIndex) || 1, isSharing: true });
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+      } else if (process.platform === 'win32') {
+        // Windows: Use PowerShell to enumerate browser windows and attempt to get tab info
+        if (browserName.includes('firefox')) {
+          try {
+            // Get all Firefox windows
+            const cmd = `powershell -NoProfile -Command "(Get-Process -Name firefox -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0} | ForEach-Object { $_.MainWindowTitle + '|||' + $_.Id })"`;
+            const { stdout } = await execAsync(cmd);
+            if (stdout && stdout.trim()) {
+              const lines = stdout.trim().split('\n');
+              for (const line of lines) {
+                if (line.includes('|||')) {
+                  const [title, pid] = line.split('|||');
+                  const isSharing = matches(title);
+                  if (isSharing) {
+                    allTabs.push({ title, pid: Number(pid) || 0, isSharing: true });
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+      } else {
+        // Linux: Use wmctrl to get window information
+        try {
+          const { stdout } = await execAsync('wmctrl -lx 2>/dev/null || true');
+          const lines = (stdout || '').split(/\r?\n/);
+          for (const line of lines) {
+            if (!line) continue;
+            const lower = line.toLowerCase();
+            if (browserName.includes('firefox') && lower.includes('firefox')) {
+              const parts = line.trim().split(/\s+/);
+              const title = parts.slice(4).join(' ');
+              const windowId = parts[0];
+              const isSharing = matches(title);
+              if (isSharing) {
+                allTabs.push({ title, windowId, isSharing: true });
+              }
+            } else if (browserName.includes('chrome') && (lower.includes('chrome') || lower.includes('chromium'))) {
+              const parts = line.trim().split(/\s+/);
+              const title = parts.slice(4).join(' ');
+              const windowId = parts[0];
+              const isSharing = matches(title);
+              if (isSharing) {
+                allTabs.push({ title, windowId, isSharing: true });
+              }
+            }
+          }
+        } catch {}
+      }
+    } catch (e) {
+      console.error(`❌ getAllTabsForBrowser error for ${browserName}:`, e);
+    }
+    
+    console.log(`📊 getAllTabsForBrowser returning ${allTabs.length} tabs for ${browserName}`);
+    return allTabs;
+  }
+
   async resolveSharingTabInfoForBrowser(browserName) {
-    const keywords = ['meet','zoom','teams','webex','discord','present','is presenting','sharing','share this tab'];
+    const keywords = ['meet','zoom','teams','webex','discord','present','is presenting','sharing','share this tab','screen share','screenshare','sharing screen','sharing your screen','you are sharing','screen sharing','screen-sharing','jitsi','whereby','appear.in','hang','call','video call','conference'];
     const domains = this.screenSharingDomains || [];
     const matches = (text) => {
       const t = String(text || '').toLowerCase();
@@ -930,13 +1282,24 @@ class SecurityService extends EventEmitter {
           } catch {}
         }
         if (browserName.includes('firefox')) {
-          // Fallback via System Events: get front window title of Firefox
           try {
-            const script = 'tell application "System Events" to tell process "Firefox" to get name of front window';
+            // Try direct Firefox AppleScript first
+            const script = 'tell application "Firefox" to set _t to {URL of active tab of front window, name of active tab of front window}\nreturn (item 1 of _t) & "|||" & (item 2 of _t)';
             const { stdout } = await execAsync(`osascript -e '${script}'`);
-            const title = (stdout || '').trim();
-            if (title && matches(title)) return { title };
-          } catch {}
+            const out = (stdout || '').trim();
+            if (out && out.includes('|||')) {
+              const [u, t] = out.split('|||');
+              if (matches(u) || matches(t)) return { url: u, title: t };
+            }
+          } catch {
+            // Fallback via System Events: get front window title of Firefox
+            try {
+              const script = 'tell application "System Events" to tell process "Firefox" to get name of front window';
+              const { stdout } = await execAsync(`osascript -e '${script}'`);
+              const title = (stdout || '').trim();
+              if (title && matches(title)) return { title };
+            } catch {}
+          }
         }
         return null;
       } else if (process.platform === 'win32') {
@@ -948,10 +1311,21 @@ class SecurityService extends EventEmitter {
         if (browserName.includes('opera')) procNames.push('opera');
         for (const pn of procNames) {
           try {
+            // Try to get the active window title for the browser
             const cmd = `powershell -NoProfile -Command "(Get-Process -Name ${pn} -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0} | Sort-Object CPU -Descending | Select-Object -First 1 -ExpandProperty MainWindowTitle)"`;
             const { stdout } = await execAsync(cmd);
             const title = (stdout || '').trim();
             if (title && matches(title)) return { title };
+            
+            // For Firefox, try alternative approach using window enumeration
+            if (pn === 'firefox') {
+              try {
+                const altCmd = `powershell -NoProfile -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; public class Win32 { [DllImport(\\"user32.dll\\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\\"user32.dll\\")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count); [DllImport(\\"user32.dll\\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId); }'; $hwnd = [Win32]::GetForegroundWindow(); $pid = 0; [Win32]::GetWindowThreadProcessId($hwnd, [ref]$pid); $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue; if ($proc -and $proc.ProcessName -eq 'firefox') { $title = New-Object System.Text.StringBuilder 256; [Win32]::GetWindowText($hwnd, $title, $title.Capacity); $title.ToString() }"`;
+                const { stdout: altOut } = await execAsync(altCmd);
+                const altTitle = (altOut || '').trim();
+                if (altTitle && matches(altTitle)) return { title: altTitle };
+              } catch {}
+            }
           } catch {}
         }
         return null;
@@ -969,11 +1343,31 @@ class SecurityService extends EventEmitter {
             if (matches(title)) return { title };
           }
         } catch {}
+        
+        // Try browser-specific approaches for Firefox and others
+        if (browserName.includes('firefox')) {
+          try {
+            // Get Firefox window titles specifically
+            const { stdout } = await execAsync('wmctrl -l | grep -i firefox | head -1 | cut -d\' \' -f4- || true');
+            const title = (stdout || '').trim();
+            if (title && matches(title)) return { title };
+          } catch {}
+        }
+        
         // Fallback to xdotool for active window title
         try {
           const { stdout } = await execAsync('xdotool getactivewindow getwindowname 2>/dev/null || true');
           const title = (stdout || '').trim();
-          if (title && matches(title)) return { title };
+          if (title && matches(title)) {
+            // Double-check this is from a browser by checking the active window class
+            try {
+              const { stdout: windowClass } = await execAsync('xdotool getactivewindow getwindowclassname 2>/dev/null || true');
+              const className = (windowClass || '').toLowerCase();
+              if (className.includes('firefox') || className.includes('chrome') || className.includes('edge') || className.includes('brave') || className.includes('opera')) {
+                return { title };
+              }
+            } catch {}
+          }
         } catch {}
         return null;
       }
@@ -1335,6 +1729,7 @@ class SecurityService extends EventEmitter {
   }
 
   async runAllChecks(signatures) {
+    console.log(`🔍 Starting runAllChecks...`);
     const results = await Promise.allSettled([
       this.checkRemoteControlApplications(),
       this.checkSuspiciousProcesses(),
@@ -1354,6 +1749,10 @@ class SecurityService extends EventEmitter {
     const seen = new Set();
     const unique = [];
     for (const t of threats) {
+      // Debug: Log all threats to identify AirPlayXPCHelper source
+      if (t.message && t.message.toLowerCase().includes('airplay')) {
+        console.log(`🚨 AirPlay threat detected:`, t);
+      }
       const k = `${t.type}|${t.message}`;
       if (seen.has(k)) continue;
       seen.add(k);

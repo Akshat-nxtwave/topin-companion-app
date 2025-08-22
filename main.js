@@ -1361,3 +1361,13 @@ ipcMain.handle('app:checkBrowserTabPermissions', async () => {
     return { ok: false, error: String(e) };
   }
 });
+
+// Debug: Test tab detection
+ipcMain.handle('app:testTabDetection', async (_evt, browserName) => {
+  try {
+    const res = await securityService.testTabDetection(browserName);
+    return { ok: true, ...res };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
