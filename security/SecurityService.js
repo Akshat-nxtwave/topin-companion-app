@@ -653,19 +653,80 @@ class SecurityService extends EventEmitter {
         threats.push({ type: 'browser_process_high_cpu', severity: 'medium', message: `${p.name} high CPU (${p.pcpu}%)`, details: { pid: p.pid, name: p.name } });
       }
       const byPid = new Map();
+      const stunPorts = new Set([3478, 5349, 19302]);
       for (const c of (connections || [])) {
         if (c.protocol !== 'udp') continue;
         const pid = c.pid;
         if (!procByPid.has(pid)) continue;
         const owner = byPidProc.get(pid);
         if (owner && this.isSystemHelper(owner.name, owner.command)) continue;
+        const isStunTurn = stunPorts.has(Number(c.localport)) || stunPorts.has(Number(c.peerport));
         const highPort = (c.localport > 30000 && c.localport < 65535) || (c.peerport > 30000 && c.peerport < 65535);
-        if (!highPort) continue;
+        if (!(highPort || isStunTurn)) continue;
         byPid.set(pid, (byPid.get(pid) || 0) + 1);
+      }
+
+      // Fallback if systeminformation provides no UDP rows
+      if (byPid.size === 0) {
+        if (process.platform === 'win32') {
+          try {
+            const { stdout } = await execAsync('netstat -ano -p udp');
+            if (stdout && stdout.trim()) {
+              const lines = stdout.split(/\r?\n/).slice(1);
+              for (const line of lines) {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length < 4) continue;
+                const local = parts[1] || '';
+                const pidStr = parts[parts.length - 1] || '';
+                const pid = Number(pidStr) || 0;
+                if (!procByPid.has(pid)) continue;
+                const localPortStr = local.split(':')[1] || '0';
+                const port = Number(localPortStr) || 0;
+                const owner = byPidProc.get(pid);
+                if (owner && this.isSystemHelper(owner.name, owner.command)) continue;
+                if (port > 30000 || stunPorts.has(port)) {
+                  byPid.set(pid, (byPid.get(pid) || 0) + 1);
+                }
+              }
+            }
+          } catch {}
+        } else {
+          try {
+            const { stdout } = await execAsync('lsof -nP -i UDP 2>/dev/null || true');
+            if (stdout && stdout.trim()) {
+              const lines = stdout.split(/\r?\n/).slice(1);
+              for (const line of lines) {
+                const cols = line.trim().split(/\s+/);
+                if (cols.length < 9) continue;
+                const pid = Number(cols[1]) || 0;
+                if (!procByPid.has(pid)) continue;
+                const nameCol = cols.slice(8).join(' ');
+                const m = nameCol.match(/:(\d+)(?:->|\s|$)/);
+                const port = m ? Number(m[1]) : 0;
+                const owner = byPidProc.get(pid);
+                if (owner && this.isSystemHelper(owner.name, owner.command)) continue;
+                if (port > 30000 || stunPorts.has(port)) {
+                  byPid.set(pid, (byPid.get(pid) || 0) + 1);
+                }
+              }
+            }
+          } catch {}
+        }
       }
       for (const [pid, count] of byPid) {
         const p = procByPid.get(pid);
         const name = p?.name || 'browser';
+        const owner = byPidProc.get(pid);
+        const cpu = Number(owner?.pcpu || 0);
+        const lowerName = String(name || '').toLowerCase();
+        const isNativeMeetingApp = /zoom|teams|microsoft teams|webex|discord/.test(lowerName);
+        // Heuristic:
+        // - Browsers: substantial UDP traffic or UDP+CPU (likely a sharing tab)
+        // - Native meeting apps: lower threshold since they multiplex fewer sockets
+        const likelySharingBrowser = (count >= 10) || (count >= 4 && cpu >= 8);
+        const likelySharingNative = (count >= 3) || (count >= 1 && cpu >= 5);
+        const likelySharing = isNativeMeetingApp ? likelySharingNative : likelySharingBrowser;
+        if (!likelySharing) continue;
         threats.push({
           type: 'screen_sharing_process_webrtc',
           severity: 'medium',
