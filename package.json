@@ -9,8 +9,8 @@
   },
   "license": "MIT",
   "scripts": {
-    "start": "ELECTRON_DISABLE_SANDBOX=1 electron .",
-    "dev": "ELECTRON_DISABLE_SANDBOX=1 electron .",
+    "start": "electron .",
+    "dev": "electron .",
     "start:win": "electron .",
     "pack": "electron-builder --dir",
     "pack:win": "electron-builder --win --dir",
@@ -23,11 +23,11 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "electron": "31",
     "systeminformation": "^5.21.23",
     "ws": "^8.17.0"
   },
   "devDependencies": {
-    "electron": "28.0.0",
     "electron-builder": "^24.13.3"
   },
   "build": {
@@ -82,4 +82,4 @@
       "hardenedRuntime": false
     }
   }
-} 
+}

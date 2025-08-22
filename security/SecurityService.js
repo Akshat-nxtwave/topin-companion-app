@@ -18,7 +18,6 @@ class SecurityService extends EventEmitter {
     this.recentSharingByPid = new Map();
     this.sharingStickyMs = 60000;
     this.enableLog = true; // Set to false to disable all logging
-    this.ramThresholdGB = 8; // RAM threshold in GB for logging control
 
     this.checkInterval = 20000;
 
@@ -79,38 +78,6 @@ class SecurityService extends EventEmitter {
   // Get current logging status
   getLoggingStatus() {
     return this.enableLog;
-  }
-
-  // Check system RAM and conditionally disable logging
-  async initializeLoggingBasedOnRAM() {
-    try {
-      const memInfo = await si.mem();
-      const totalRAM = memInfo.total;
-      const ramGB = totalRAM / (1024 * 1024 * 1024);
-      
-      console.log(`🔧 System RAM detected: ${ramGB.toFixed(2)} GB`);
-      
-      if (ramGB < this.ramThresholdGB) {
-        this.enableLog = false;
-        console.log(`⚠️  Logging disabled due to low RAM (${ramGB.toFixed(2)} GB < ${this.ramThresholdGB} GB threshold)`);
-      } else {
-        console.log(`✅ Logging enabled - sufficient RAM available (${ramGB.toFixed(2)} GB >= ${this.ramThresholdGB} GB threshold)`);
-      }
-      
-      return {
-        ramGB: Number(ramGB.toFixed(2)),
-        loggingEnabled: this.enableLog,
-        threshold: this.ramThresholdGB
-      };
-    } catch (error) {
-      console.error('❌ Failed to detect system RAM, keeping logging enabled:', error);
-      return {
-        ramGB: null,
-        loggingEnabled: this.enableLog,
-        threshold: this.ramThresholdGB,
-        error: String(error)
-      };
-    }
   }
 
   async testTabDetection(browserName = 'firefox') {

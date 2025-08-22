@@ -2,9 +2,6 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu-vsync');
 app.commandLine.appendSwitch('log-level', '3');
-app.commandLine.appendSwitch('no-sandbox');
-app.commandLine.appendSwitch('disable-dev-shm-usage');
-app.commandLine.appendSwitch('disable-gpu-sandbox');
 const path = require('path');
 const os = require('os');
 const si = require('systeminformation');
@@ -463,8 +460,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
-      webSecurity: false
+      sandbox: false
     }
   });
 
@@ -476,10 +472,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  // Add a small delay to prevent race conditions on macOS
-  setTimeout(() => {
-    createWindow();
-  }, 100);
+  createWindow();
 
   // Start WebSocket server to accept incoming connections
   try {
@@ -554,31 +547,17 @@ async function getFallbackProcessesPOSIX() {
 }
 
 async function scanSystem() {
-  try {
-    const [processes, currentLoad] = await Promise.all([
-      si.processes().catch(err => {
-        console.warn('systeminformation.processes() failed:', err);
-        return { list: [] };
-      }), 
-      si.currentLoad().catch(err => {
-        console.warn('systeminformation.currentLoad() failed:', err);
-        return { currentLoad: 0 };
-      })
-    ]);
-    let running = (processes.list || []).map(p => ({ pid: p.pid, name: p.name || 'unknown', path: p.path, user: p.user, cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0, mem: Number.isFinite(p.pmem) ? p.pmem : 0, command: p.command || '' }));
-    if (running.length === 0) {
-      try {
-        const fb = await getFallbackProcessesPOSIX();
-        if (fb.length) running = fb.map(p => ({ pid: p.pid, name: p.name, path: '', user: '', cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0, mem: Number.isFinite(p.pmem) ? p.pmem : 0, command: p.command }));
-      } catch {}
-    }
-    running.sort((a,b) => (b.cpu || 0) - (a.cpu || 0));
-    const runningLimited = running.slice(0, 500);
-    return { platform: os.platform(), arch: os.arch(), load: Number.isFinite(currentLoad.currentLoad) ? currentLoad.currentLoad : 0, processes: runningLimited };
-  } catch (error) {
-    console.warn('scanSystem() failed with error:', error);
-    return { platform: os.platform(), arch: os.arch(), load: 0, processes: [] };
+  const [processes, currentLoad] = await Promise.all([si.processes(), si.currentLoad()]);
+  let running = (processes.list || []).map(p => ({ pid: p.pid, name: p.name || 'unknown', path: p.path, user: p.user, cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0, mem: Number.isFinite(p.pmem) ? p.pmem : 0, command: p.command || '' }));
+  if (running.length === 0) {
+    try {
+      const fb = await getFallbackProcessesPOSIX();
+      if (fb.length) running = fb.map(p => ({ pid: p.pid, name: p.name, path: '', user: '', cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0, mem: Number.isFinite(p.pmem) ? p.pmem : 0, command: p.command }));
+    } catch {}
   }
+  running.sort((a,b) => (b.cpu || 0) - (a.cpu || 0));
+  const runningLimited = running.slice(0, 500);
+  return { platform: os.platform(), arch: os.arch(), load: Number.isFinite(currentLoad.currentLoad) ? currentLoad.currentLoad : 0, processes: runningLimited };
 }
 
 ipcMain.handle('app:getNotificationStatus', async () => notificationService.getNotificationStatus());

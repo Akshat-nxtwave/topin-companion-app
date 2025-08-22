@@ -33,7 +33,6 @@ contextBridge.exposeInMainWorld('companion', {
   testTabDetection: (browserName) => ipcRenderer.invoke('app:testTabDetection', browserName),
   setLogging: (enabled) => ipcRenderer.invoke('app:setLogging', enabled),
   getLoggingStatus: () => ipcRenderer.invoke('app:getLoggingStatus'),
-  getRAMInfo: () => ipcRenderer.invoke('app:getRAMInfo'),
   onWebSocketMessage: (handler) => {
     const listener = (_evt, message) => handler(message);
     ipcRenderer.on('websocket:message', listener);
