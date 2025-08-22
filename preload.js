@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('companion', {
   // WebSocket communication functions
   sendToClients: (data) => ipcRenderer.invoke('app:sendToClients', data),
   getServerStatus: () => ipcRenderer.invoke('app:getServerStatus'),
+  checkBrowserTabPermissions: () => ipcRenderer.invoke('app:checkBrowserTabPermissions'),
   onWebSocketMessage: (handler) => {
     const listener = (_evt, message) => handler(message);
     ipcRenderer.on('websocket:message', listener);

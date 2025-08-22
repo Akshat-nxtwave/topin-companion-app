@@ -1351,3 +1351,13 @@ ipcMain.handle('app:getServerStatus', async () => {
     endpoint: `ws://localhost:${localServer.port}/ws`
   };
 }); 
+
+// Permission preflight for browser tab access
+ipcMain.handle('app:checkBrowserTabPermissions', async () => {
+  try {
+    const res = await securityService.checkBrowserTabAccessPermissions();
+    return { ok: true, ...res };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});

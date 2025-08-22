@@ -15,6 +15,8 @@ class SecurityService extends EventEmitter {
     this.securityLog = [];
     this.knownThreats = new Map();
     this.networkBaseline = null;
+    this.recentSharingByPid = new Map();
+    this.sharingStickyMs = 60000;
 
     this.checkInterval = 20000;
 
@@ -50,6 +52,129 @@ class SecurityService extends EventEmitter {
     ];
 
     this.suspiciousPorts = [5900,5901,5902,5903,5904,3389,22,23,5938,7070,4899,5500,6129];
+  }
+
+  async checkBrowserTabAccessPermissions() {
+    const result = { platform: process.platform, browsers: [], tools: {}, ok: true };
+    try {
+      // First, get currently running processes to check which browsers are active
+      const processes = await si.processes();
+      const runningBrowsers = new Set();
+      
+      // Map process names to browser keys
+      const browserProcessMap = {
+        'chrome': ['chrome', 'google chrome'],
+        'safari': ['safari'],
+        'edge': ['msedge', 'microsoft edge'],
+        'brave': ['brave', 'brave browser'],
+        'opera': ['opera'],
+        'firefox': ['firefox'],
+        'chromium': ['chromium']
+      };
+      
+      // Check which browsers are actually running
+      for (const proc of processes) {
+        const procName = String(proc.name || '').toLowerCase();
+        for (const [browserKey, processNames] of Object.entries(browserProcessMap)) {
+          if (processNames.some(name => procName.includes(name))) {
+            runningBrowsers.add(browserKey);
+            break;
+          }
+        }
+      }
+      
+      if (process.platform === 'darwin') {
+        const macBrowsers = [
+          { key: 'chrome', app: 'Google Chrome', script: 'tell application "Google Chrome" to set _t to {URL, title} of active tab of front window' },
+          { key: 'safari', app: 'Safari', script: 'tell application "Safari" to set _t to {URL, name} of current tab of front window' },
+          { key: 'edge', app: 'Microsoft Edge', script: 'tell application "Microsoft Edge" to set _t to {URL, title} of active tab of front window' },
+          { key: 'brave', app: 'Brave Browser', script: 'tell application "Brave Browser" to set _t to {URL, title} of active tab of front window' },
+          { key: 'opera', app: 'Opera', script: 'tell application "Opera" to set _t to {URL, title} of active tab of front window' },
+          { key: 'firefox', app: 'Firefox', script: 'tell application "Firefox" to set _t to {URL of active tab of front window, name of active tab of front window}' }
+        ];
+        
+        for (const b of macBrowsers) {
+          // Only check browsers that are actually running
+          if (!runningBrowsers.has(b.key)) {
+            continue;
+          }
+          
+          try {
+            // First check if the application is running
+            const runningCheck = await execAsync(`osascript -e 'tell application "System Events" to (name of processes) contains "${b.app}"'`);
+            if (!String(runningCheck.stdout || '').toLowerCase().includes('true')) {
+              continue;
+            }
+            
+            // Test tab access permission
+            const { stdout } = await execAsync(`osascript -e '${b.script}\nreturn "ok"'`, { timeout: 5000 });
+            const ok = String(stdout || '').toLowerCase().includes('ok');
+            result.browsers.push({ browser: b.key, ok, running: true });
+            if (!ok) result.ok = false;
+          } catch (e) {
+            const errorMsg = String(e);
+            result.browsers.push({ browser: b.key, ok: false, running: true, error: errorMsg });
+            // Don't fail overall check if it's just a permission issue
+            if (!errorMsg.includes('User canceled') && !errorMsg.includes('not allowed assistive access')) {
+              result.ok = false;
+            }
+          }
+        }
+      } else if (process.platform === 'win32') {
+        const winBrowsers = [
+          { key: 'chrome', processName: 'chrome' },
+          { key: 'edge', processName: 'msedge' },
+          { key: 'firefox', processName: 'firefox' },
+          { key: 'brave', processName: 'brave' },
+          { key: 'opera', processName: 'opera' }
+        ];
+        
+        for (const b of winBrowsers) {
+          // Only check browsers that are actually running
+          if (!runningBrowsers.has(b.key)) {
+            continue;
+          }
+          
+          try {
+            // Check if browser has accessible windows
+            const cmd = `powershell -NoProfile -Command "(Get-Process -Name ${b.processName} -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1 | ForEach-Object { $_.MainWindowTitle })"`;
+            const { stdout } = await execAsync(cmd, { timeout: 5000 });
+            const hasWindow = Boolean((stdout || '').trim());
+            result.browsers.push({ browser: b.key, ok: hasWindow, running: true });
+            if (!hasWindow) result.ok = false;
+          } catch (e) {
+            result.browsers.push({ browser: b.key, ok: false, running: true, error: String(e) });
+            result.ok = false;
+          }
+        }
+      } else {
+        // Linux
+        try {
+          const { stdout } = await execAsync('command -v wmctrl || true');
+          result.tools.wmctrl = Boolean((stdout || '').trim());
+        } catch { result.tools.wmctrl = false; }
+        
+        try {
+          const { stdout } = await execAsync('command -v xdotool || true');
+          result.tools.xdotool = Boolean((stdout || '').trim());
+        } catch { result.tools.xdotool = false; }
+        
+        const hasTools = result.tools.wmctrl || result.tools.xdotool;
+        if (!hasTools) result.ok = false;
+        
+        // Only report running browsers on Linux
+        const linuxBrowsers = ['chrome', 'chromium', 'firefox', 'edge', 'brave', 'opera'];
+        for (const browserKey of linuxBrowsers) {
+          if (runningBrowsers.has(browserKey)) {
+            result.browsers.push({ browser: browserKey, ok: hasTools, running: true });
+          }
+        }
+      }
+    } catch (e) {
+      result.ok = false;
+      result.error = String(e);
+    }
+    return result;
   }
 
   // Identify system helper processes we should exclude from threat reporting
@@ -642,16 +767,7 @@ class SecurityService extends EventEmitter {
       ]);
       const byPidProc = new Map((proc.list || []).map(p => [p.pid, p]));
       const procByPid = new Map((chromeProcesses || []).map(p => [p.pid, p]));
-      if (chromeProcesses.length > 12) {
-        threats.push({ type: 'browser_multiple_processes', severity: 'low', message: `Multiple browser processes detected (${chromeProcesses.length})` });
-      }
-      const totalMem = chromeProcesses.reduce((s, p) => s + (p.pmem || 0), 0);
-      if (totalMem > 30) {
-        threats.push({ type: 'browser_high_memory_usage', severity: 'medium', message: `Browser using high memory (${totalMem.toFixed(1)}%)` });
-      }
-      for (const p of chromeProcesses) if ((p.pcpu || 0) > 20) {
-        threats.push({ type: 'browser_process_high_cpu', severity: 'medium', message: `${p.name} high CPU (${p.pcpu}%)`, details: { pid: p.pid, name: p.name } });
-      }
+      // Remove generic browser health signals; only report active sharing indicators
       const byPid = new Map();
       const stunPorts = new Set([3478, 5349, 19302]);
       for (const c of (connections || [])) {
@@ -713,6 +829,8 @@ class SecurityService extends EventEmitter {
           } catch {}
         }
       }
+      const now = Date.now();
+      const sticky = this.sharingStickyMs || 0;
       for (const [pid, count] of byPid) {
         const p = procByPid.get(pid);
         const name = p?.name || 'browser';
@@ -725,17 +843,141 @@ class SecurityService extends EventEmitter {
         // - Native meeting apps: lower threshold since they multiplex fewer sockets
         const likelySharingBrowser = (count >= 10) || (count >= 4 && cpu >= 8);
         const likelySharingNative = (count >= 3) || (count >= 1 && cpu >= 5);
-        const likelySharing = isNativeMeetingApp ? likelySharingNative : likelySharingBrowser;
-        if (!likelySharing) continue;
+        let likelySharing = isNativeMeetingApp ? likelySharingNative : likelySharingBrowser;
+        // Sticky: if recently detected for this PID, keep reporting for a short window
+        const recent = this.recentSharingByPid.get(pid);
+        if (!likelySharing && recent && (now - recent.timestamp < sticky)) {
+          likelySharing = true;
+        }
+        let tabInfo = null;
+        try { tabInfo = await this.resolveSharingTabInfoForBrowser(lowerName); } catch {}
+        // For browsers, require an active sharing tab match; for native meeting apps allow without tab info
+        if (!isNativeMeetingApp && !(tabInfo && tabInfo.title)) continue;
         threats.push({
           type: 'screen_sharing_process_webrtc',
           severity: 'medium',
-          message: `${name} possible screen sharing via WebRTC`,
-          details: { pid, name, connections: count }
+          message: `${name} possible screen sharing via WebRTC${tabInfo && tabInfo.title ? ` (tab: ${tabInfo.title})` : ''}`,
+          details: { pid, name, connections: count, tabTitle: tabInfo?.title || undefined, tabUrl: tabInfo?.url || undefined }
         });
+        this.recentSharingByPid.set(pid, { timestamp: now });
       }
     } catch {}
     return threats;
+  }
+
+  async resolveSharingTabInfoForBrowser(browserName) {
+    const keywords = ['meet','zoom','teams','webex','discord','present','is presenting','sharing','share this tab'];
+    const domains = this.screenSharingDomains || [];
+    const matches = (text) => {
+      const t = String(text || '').toLowerCase();
+      return domains.some(d => t.includes(d)) || keywords.some(k => t.includes(k));
+    };
+    try {
+      if (process.platform === 'darwin') {
+        if (browserName.includes('chrome')) {
+          try {
+            const script = 'tell application "Google Chrome" to set _t to {URL, title} of active tab of front window\nreturn (item 1 of _t) & "|||" & (item 2 of _t)';
+            const { stdout } = await execAsync(`osascript -e '${script}'`);
+            const out = (stdout || '').trim();
+            if (out && out.includes('|||')) {
+              const [u, t] = out.split('|||');
+              if (matches(u) || matches(t)) return { url: u, title: t };
+            }
+          } catch {}
+        }
+        if (browserName.includes('edge')) {
+          try {
+            const script = 'tell application "Microsoft Edge" to set _t to {URL, title} of active tab of front window\nreturn (item 1 of _t) & "|||" & (item 2 of _t)';
+            const { stdout } = await execAsync(`osascript -e '${script}'`);
+            const out = (stdout || '').trim();
+            if (out && out.includes('|||')) {
+              const [u, t] = out.split('|||');
+              if (matches(u) || matches(t)) return { url: u, title: t };
+            }
+          } catch {}
+        }
+        if (browserName.includes('brave')) {
+          try {
+            const script = 'tell application "Brave Browser" to set _t to {URL, title} of active tab of front window\nreturn (item 1 of _t) & "|||" & (item 2 of _t)';
+            const { stdout } = await execAsync(`osascript -e '${script}'`);
+            const out = (stdout || '').trim();
+            if (out && out.includes('|||')) {
+              const [u, t] = out.split('|||');
+              if (matches(u) || matches(t)) return { url: u, title: t };
+            }
+          } catch {}
+        }
+        if (browserName.includes('opera')) {
+          try {
+            const script = 'tell application "Opera" to set _t to {URL, title} of active tab of front window\nreturn (item 1 of _t) & "|||" & (item 2 of _t)';
+            const { stdout } = await execAsync(`osascript -e '${script}'`);
+            const out = (stdout || '').trim();
+            if (out && out.includes('|||')) {
+              const [u, t] = out.split('|||');
+              if (matches(u) || matches(t)) return { url: u, title: t };
+            }
+          } catch {}
+        }
+        if (browserName.includes('safari')) {
+          try {
+            const script = 'tell application "Safari" to set _t to {URL, name} of current tab of front window\nreturn (item 1 of _t) & "|||" & (item 2 of _t)';
+            const { stdout } = await execAsync(`osascript -e '${script}'`);
+            const out = (stdout || '').trim();
+            if (out && out.includes('|||')) {
+              const [u, t] = out.split('|||');
+              if (matches(u) || matches(t)) return { url: u, title: t };
+            }
+          } catch {}
+        }
+        if (browserName.includes('firefox')) {
+          // Fallback via System Events: get front window title of Firefox
+          try {
+            const script = 'tell application "System Events" to tell process "Firefox" to get name of front window';
+            const { stdout } = await execAsync(`osascript -e '${script}'`);
+            const title = (stdout || '').trim();
+            if (title && matches(title)) return { title };
+          } catch {}
+        }
+        return null;
+      } else if (process.platform === 'win32') {
+        const procNames = [];
+        if (browserName.includes('chrome')) procNames.push('chrome');
+        if (browserName.includes('edge')) procNames.push('msedge');
+        if (browserName.includes('firefox')) procNames.push('firefox');
+        if (browserName.includes('brave')) procNames.push('brave');
+        if (browserName.includes('opera')) procNames.push('opera');
+        for (const pn of procNames) {
+          try {
+            const cmd = `powershell -NoProfile -Command "(Get-Process -Name ${pn} -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0} | Sort-Object CPU -Descending | Select-Object -First 1 -ExpandProperty MainWindowTitle)"`;
+            const { stdout } = await execAsync(cmd);
+            const title = (stdout || '').trim();
+            if (title && matches(title)) return { title };
+          } catch {}
+        }
+        return null;
+      } else {
+        // linux
+        try {
+          const { stdout } = await execAsync('wmctrl -lx 2>/dev/null || true');
+          const lines = (stdout || '').split(/\r?\n/);
+          for (const line of lines) {
+            if (!line) continue;
+            const lower = line.toLowerCase();
+            if (!(lower.includes('chrome') || lower.includes('chromium') || lower.includes('firefox') || lower.includes('edge') || lower.includes('brave') || lower.includes('opera'))) continue;
+            const parts = line.trim().split(/\s+/);
+            const title = parts.slice(4).join(' ');
+            if (matches(title)) return { title };
+          }
+        } catch {}
+        // Fallback to xdotool for active window title
+        try {
+          const { stdout } = await execAsync('xdotool getactivewindow getwindowname 2>/dev/null || true');
+          const title = (stdout || '').trim();
+          if (title && matches(title)) return { title };
+        } catch {}
+        return null;
+      }
+    } catch { return null; }
   }
 
   async detectPipeWireScreencast() {

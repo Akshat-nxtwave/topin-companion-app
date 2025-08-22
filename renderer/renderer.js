@@ -198,6 +198,12 @@ scanBtn.addEventListener('click', runSystemCheck);
 (async function init(){
   globalStatusEl.textContent = 'Idle';
   globalHintEl.textContent = 'Click Scan Now to run notifications check and system scan.';
+  try {
+    const perm = await window.companion.checkBrowserTabPermissions();
+    if (perm && perm.ok === false) {
+      console.warn('Browser tab permission check failed', perm);
+    }
+  } catch {}
   if (unsubscribeAutoScan) { try { unsubscribeAutoScan(); } catch {} }
   unsubscribeAutoScan = window.companion.onAutoScanResult(() => {
     if (!isChecking) runSystemCheck();
