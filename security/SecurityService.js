@@ -17,6 +17,8 @@ class SecurityService extends EventEmitter {
     this.networkBaseline = null;
     this.recentSharingByPid = new Map();
     this.sharingStickyMs = 60000;
+    this.enableLog = true; // Set to false to disable all logging
+    this.ramThresholdGB = 8; // RAM threshold in GB for logging control
 
     this.checkInterval = 20000;
 
@@ -54,18 +56,75 @@ class SecurityService extends EventEmitter {
     this.suspiciousPorts = [5900,5901,5902,5903,5904,3389,22,23,5938,7070,4899,5500,6129];
   }
 
+  // Centralized logging function
+  log(message, ...args) {
+    if (this.enableLog) {
+      console.log(message, ...args);
+    }
+  }
+
+  // Centralized error logging function
+  logError(message, ...args) {
+    if (this.enableLog) {
+      console.error(message, ...args);
+    }
+  }
+
+  // Enable or disable logging
+  setLogging(enabled) {
+    this.enableLog = enabled;
+    this.log(`🔧 Logging ${enabled ? 'enabled' : 'disabled'}`);
+  }
+
+  // Get current logging status
+  getLoggingStatus() {
+    return this.enableLog;
+  }
+
+  // Check system RAM and conditionally disable logging
+  async initializeLoggingBasedOnRAM() {
+    try {
+      const memInfo = await si.mem();
+      const totalRAM = memInfo.total;
+      const ramGB = totalRAM / (1024 * 1024 * 1024);
+      
+      console.log(`🔧 System RAM detected: ${ramGB.toFixed(2)} GB`);
+      
+      if (ramGB < this.ramThresholdGB) {
+        this.enableLog = false;
+        console.log(`⚠️  Logging disabled due to low RAM (${ramGB.toFixed(2)} GB < ${this.ramThresholdGB} GB threshold)`);
+      } else {
+        console.log(`✅ Logging enabled - sufficient RAM available (${ramGB.toFixed(2)} GB >= ${this.ramThresholdGB} GB threshold)`);
+      }
+      
+      return {
+        ramGB: Number(ramGB.toFixed(2)),
+        loggingEnabled: this.enableLog,
+        threshold: this.ramThresholdGB
+      };
+    } catch (error) {
+      console.error('❌ Failed to detect system RAM, keeping logging enabled:', error);
+      return {
+        ramGB: null,
+        loggingEnabled: this.enableLog,
+        threshold: this.ramThresholdGB,
+        error: String(error)
+      };
+    }
+  }
+
   async testTabDetection(browserName = 'firefox') {
-    console.log(`🧪 Testing tab detection for ${browserName}...`);
+    this.log(`🧪 Testing tab detection for ${browserName}...`);
     try {
       const allTabs = await this.getAllTabsForBrowser(browserName);
-      console.log(`🧪 Found ${allTabs.length} sharing tabs:`, allTabs);
+      this.log(`🧪 Found ${allTabs.length} sharing tabs:`, allTabs);
       
       const tabInfo = await this.resolveSharingTabInfoForBrowser(browserName);
-      console.log(`🧪 Single tab info:`, tabInfo);
+      this.log(`🧪 Single tab info:`, tabInfo);
       
       return { allTabs, tabInfo };
     } catch (e) {
-      console.error(`🧪 Test failed:`, e);
+      this.logError(`🧪 Test failed:`, e);
       return { error: String(e) };
     }
   }
@@ -201,11 +260,11 @@ class SecurityService extends EventEmitter {
     
     // Check for AirPlay helpers first (more specific)
     if (name.includes('airplayxpchelper') || cmd.includes('airplayxpchelper')) {
-      console.log(`🔧 Excluding AirPlayXPCHelper: ${processName}`);
+      this.log(`🔧 Excluding AirPlayXPCHelper: ${processName}`);
       return true;
     }
     if (name.includes('airplay') || cmd.includes('airplay')) {
-      console.log(`🔧 Excluding AirPlay process: ${processName}`);
+      this.log(`🔧 Excluding AirPlay process: ${processName}`);
       return true;
     }
     
@@ -571,7 +630,7 @@ class SecurityService extends EventEmitter {
         
         // Skip system helpers like AirPlayXPCHelper
         if (this.isSystemHelper(name, cmd)) {
-          console.log(`🔧 Skipping system helper in remote control check: ${p.name}`);
+          this.log(`🔧 Skipping system helper in remote control check: ${p.name}`);
           continue;
         }
 
@@ -585,7 +644,7 @@ class SecurityService extends EventEmitter {
           if (!a) return false;
           const matches = name.includes(a) || exeBase.includes(a) || (cmd.includes(a) && !/\.(deb|rpm|msi|dmg)/.test(cmd));
           if (matches && name.includes('airplay')) {
-            console.log(`🔧 AirPlay process ${p.name} matched remote control pattern "${app}" but should be excluded`);
+            this.log(`🔧 AirPlay process ${p.name} matched remote control pattern "${app}" but should be excluded`);
           }
           return matches;
         });
@@ -698,7 +757,7 @@ class SecurityService extends EventEmitter {
       const browserProcs = [];
       const videoProcs = [];
       const livePidSet = new Set((processes.list || []).map(p => p.pid));
-      console.log(`🔍 Screen sharing check - found ${processes.list?.length || 0} processes`);
+      this.log(`🔍 Screen sharing check - found ${processes.list?.length || 0} processes`);
       for (const p of (processes.list || [])) {
         if (!p || (!p.name && !p.command)) continue;
         const name = (p.name || '').toLowerCase();
@@ -710,7 +769,7 @@ class SecurityService extends EventEmitter {
         if (browsers.some(b => name.includes(b))) {
           // Check system helper first
           if (this.isSystemHelper(name, cmd)) {
-            console.log(`🔧 Skipping system helper that matches browser pattern: ${p.name} (PID: ${p.pid})`);
+            this.log(`🔧 Skipping system helper that matches browser pattern: ${p.name} (PID: ${p.pid})`);
             continue;
           }
           
@@ -720,14 +779,14 @@ class SecurityService extends EventEmitter {
                                 !name.includes('knowledge') && !name.includes('sync') &&
                                 !name.includes('notification') && !name.includes('search');
           if (isMainBrowser) {
-            console.log(`🌐 Found main browser: ${p.name} (PID: ${p.pid})`);
+            this.log(`🌐 Found main browser: ${p.name} (PID: ${p.pid})`);
             browserProcs.push(p);
           } else {
-            console.log(`🔧 Skipping browser helper: ${p.name} (PID: ${p.pid})`);
+            this.log(`🔧 Skipping browser helper: ${p.name} (PID: ${p.pid})`);
           }
         }
         if (videoApps.some(a => name.includes(a))) {
-          console.log(`📹 Found video app: ${p.name} (PID: ${p.pid})`);
+          this.log(`📹 Found video app: ${p.name} (PID: ${p.pid})`);
           videoProcs.push(p);
         }
         if (browsers.some(b => name.includes(b))) {
@@ -749,26 +808,26 @@ class SecurityService extends EventEmitter {
         }
       }
 
-      console.log(`🔍 Processing ${browserProcs.length} browser processes and ${videoProcs.length} video app processes`);
+      this.log(`🔍 Processing ${browserProcs.length} browser processes and ${videoProcs.length} video app processes`);
       if (browserProcs.length > 0) {
         const browserThreats = await this.detectChromeScreenSharing(browserProcs);
-        console.log(`🔍 Browser WebRTC detection returned ${browserThreats.length} threats`);
+        this.log(`🔍 Browser WebRTC detection returned ${browserThreats.length} threats`);
         threats.push(...browserThreats);
       }
       if (videoProcs.length > 0) {
         const videoThreats = await this.detectChromeScreenSharing(videoProcs);
-        console.log(`🔍 Video app WebRTC detection returned ${videoThreats.length} threats`);
+        this.log(`🔍 Video app WebRTC detection returned ${videoThreats.length} threats`);
         threats.push(...videoThreats);
       }
       
       // Even without WebRTC activity, check for sharing tabs directly
-      console.log(`🔍 Checking for sharing tabs directly without WebRTC requirement...`);
+      this.log(`🔍 Checking for sharing tabs directly without WebRTC requirement...`);
       for (const p of browserProcs) {
         try {
           const name = (p.name || '').toLowerCase();
           const allSharingTabs = await this.getAllTabsForBrowser(name);
           if (allSharingTabs.length > 0) {
-            console.log(`🎯 Found ${allSharingTabs.length} sharing tabs in ${p.name} without WebRTC`);
+            this.log(`🎯 Found ${allSharingTabs.length} sharing tabs in ${p.name} without WebRTC`);
             threats.push({
               type: 'screen_sharing_tabs_detected',
               severity: allSharingTabs.length > 1 ? 'high' : 'medium',
@@ -783,7 +842,7 @@ class SecurityService extends EventEmitter {
             });
           }
         } catch (e) {
-          console.error(`❌ Direct tab check failed for ${p.name}:`, e);
+          this.logError(`❌ Direct tab check failed for ${p.name}:`, e);
         }
       }
 
@@ -875,7 +934,7 @@ class SecurityService extends EventEmitter {
       }
 
       // Always try fallback methods as systeminformation UDP detection is unreliable
-      console.log(`🔍 Trying fallback UDP detection methods...`);
+      this.log(`🔍 Trying fallback UDP detection methods...`);
       if (byPid.size === 0 || true) {
         if (process.platform === 'win32') {
           try {
@@ -903,7 +962,7 @@ class SecurityService extends EventEmitter {
           // macOS/Linux - use lsof for UDP connections
           try {
             const { stdout } = await execAsync('lsof -nP -i UDP 2>/dev/null || true');
-            console.log(`🔍 lsof UDP output lines: ${stdout ? stdout.split('\n').length : 0}`);
+            this.log(`🔍 lsof UDP output lines: ${stdout ? stdout.split('\n').length : 0}`);
             if (stdout && stdout.trim()) {
               const lines = stdout.split(/\r?\n/).slice(1);
               let foundConnections = 0;
@@ -919,7 +978,7 @@ class SecurityService extends EventEmitter {
                 const m = nameCol.match(/:(\d+)(?:->|$|\s)/);
                 if (m) port = Number(m[1]);
                 
-                console.log(`🔍 UDP connection: ${command} (PID: ${pid}) port: ${port}`);
+                this.log(`🔍 UDP connection: ${command} (PID: ${pid}) port: ${port}`);
                 
                 // Check if this PID matches any of our browser processes
                 if (procByPid.has(pid)) {
@@ -930,27 +989,27 @@ class SecurityService extends EventEmitter {
                   if (port > 30000 || stunPorts.has(port)) {
                     byPid.set(pid, (byPid.get(pid) || 0) + 1);
                     foundConnections++;
-                    console.log(`✅ Counted UDP for PID ${pid} (${command}) port ${port} - total: ${byPid.get(pid)}`);
+                    this.log(`✅ Counted UDP for PID ${pid} (${command}) port ${port} - total: ${byPid.get(pid)}`);
                   }
                 }
               }
-              console.log(`🔍 Found ${foundConnections} relevant UDP connections`);
+              this.log(`🔍 Found ${foundConnections} relevant UDP connections`);
             }
           } catch (e) {
-            console.error(`❌ lsof UDP detection failed:`, e);
+            this.logError(`❌ lsof UDP detection failed:`, e);
           }
         }
       }
       const now = Date.now();
       const sticky = this.sharingStickyMs || 0;
-      console.log(`🔍 WebRTC detection found ${byPid.size} processes with UDP activity`);
+      this.log(`🔍 WebRTC detection found ${byPid.size} processes with UDP activity`);
       for (const [pid, count] of byPid) {
         const p = procByPid.get(pid);
         const name = p?.name || 'browser';
         const owner = byPidProc.get(pid);
         const cpu = Number(owner?.pcpu || 0);
         const lowerName = String(name || '').toLowerCase();
-        console.log(`🔍 Checking PID ${pid}: ${name} (${count} UDP connections, ${cpu}% CPU)`);
+        this.log(`🔍 Checking PID ${pid}: ${name} (${count} UDP connections, ${cpu}% CPU)`);
         const isNativeMeetingApp = /zoom|teams|microsoft teams|webex|discord/.test(lowerName);
         // Heuristic:
         // - Browsers: substantial UDP traffic or UDP+CPU (likely a sharing tab)
@@ -977,9 +1036,9 @@ class SecurityService extends EventEmitter {
         // For browsers, require either comprehensive tab list or single tab info or substantial WebRTC activity
         const isChromiumBased = /(chrome|chromium|edge|brave|opera)/.test(lowerName);
         const hasTabEvidence = allSharingTabs.length > 0 || (tabInfo && tabInfo.title);
-        console.log(`🔍 PID ${pid} (${name}): isNativeMeetingApp=${isNativeMeetingApp}, hasTabEvidence=${hasTabEvidence}, likelySharing=${likelySharing}, allSharingTabs=${allSharingTabs.length}, tabInfo=${!!tabInfo}`);
+        this.log(`🔍 PID ${pid} (${name}): isNativeMeetingApp=${isNativeMeetingApp}, hasTabEvidence=${hasTabEvidence}, likelySharing=${likelySharing}, allSharingTabs=${allSharingTabs.length}, tabInfo=${!!tabInfo}`);
         if (!isNativeMeetingApp && !hasTabEvidence && !likelySharing) {
-          console.log(`❌ PID ${pid} (${name}): Skipping - no evidence of sharing`);
+          this.log(`❌ PID ${pid} (${name}): Skipping - no evidence of sharing`);
           continue;
         }
         
@@ -1022,7 +1081,7 @@ class SecurityService extends EventEmitter {
       return domains.some(d => t.includes(d)) || keywords.some(k => t.includes(k));
     };
 
-    console.log(`🔍 getAllTabsForBrowser called for: ${browserName} on ${process.platform}`);
+    this.log(`🔍 getAllTabsForBrowser called for: ${browserName} on ${process.platform}`);
 
     try {
       if (process.platform === 'darwin') {
@@ -1043,20 +1102,20 @@ class SecurityService extends EventEmitter {
               end tell
             `;
             const { stdout } = await execAsync(`osascript -e '${script}'`);
-            console.log(`🦊 Firefox AppleScript output:`, stdout);
+            this.log(`🦊 Firefox AppleScript output:`, stdout);
             if (stdout && stdout.trim()) {
               // Parse AppleScript list format
               const tabData = stdout.trim();
               // Simple parsing for Firefox tabs - this is a basic implementation
               const tabMatches = tabData.match(/\{([^}]+)\}/g) || [];
-              console.log(`🦊 Firefox tab matches found: ${tabMatches.length}`);
+              this.log(`🦊 Firefox tab matches found: ${tabMatches.length}`);
               for (const match of tabMatches) {
                 const parts = match.slice(1, -1).split(', ');
                 if (parts.length >= 2) {
                   const url = parts[0];
                   const title = parts[1];
                   const isSharing = matches(url) || matches(title);
-                  console.log(`🦊 Firefox tab: ${title} | ${url} | sharing: ${isSharing}`);
+                  this.log(`🦊 Firefox tab: ${title} | ${url} | sharing: ${isSharing}`);
                   if (isSharing) {
                     allTabs.push({ url, title, windowIndex: parts[2] || 1, tabIndex: parts[3] || 1, isSharing: true });
                   }
@@ -1210,10 +1269,10 @@ class SecurityService extends EventEmitter {
         } catch {}
       }
     } catch (e) {
-      console.error(`❌ getAllTabsForBrowser error for ${browserName}:`, e);
+      this.logError(`❌ getAllTabsForBrowser error for ${browserName}:`, e);
     }
     
-    console.log(`📊 getAllTabsForBrowser returning ${allTabs.length} tabs for ${browserName}`);
+    this.log(`📊 getAllTabsForBrowser returning ${allTabs.length} tabs for ${browserName}`);
     return allTabs;
   }
 
@@ -1729,7 +1788,7 @@ class SecurityService extends EventEmitter {
   }
 
   async runAllChecks(signatures) {
-    console.log(`🔍 Starting runAllChecks...`);
+    this.log(`🔍 Starting runAllChecks...`);
     const results = await Promise.allSettled([
       this.checkRemoteControlApplications(),
       this.checkSuspiciousProcesses(),
@@ -1751,7 +1810,7 @@ class SecurityService extends EventEmitter {
     for (const t of threats) {
       // Debug: Log all threats to identify AirPlayXPCHelper source
       if (t.message && t.message.toLowerCase().includes('airplay')) {
-        console.log(`🚨 AirPlay threat detected:`, t);
+        this.log(`🚨 AirPlay threat detected:`, t);
       }
       const k = `${t.type}|${t.message}`;
       if (seen.has(k)) continue;

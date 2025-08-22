@@ -25,6 +25,22 @@ const TopinEvents = Object.freeze({
 const securityService = new SecurityService();
 const notificationService = new NotificationService();
 
+// Initialize RAM-based logging during startup
+let ramInfo = null;
+
+// Helper function for conditional logging
+function conditionalLog(message, ...args) {
+  if (securityService.getLoggingStatus()) {
+    console.log(message, ...args);
+  }
+}
+
+function conditionalError(message, ...args) {
+  if (securityService.getLoggingStatus()) {
+    console.error(message, ...args);
+  }
+}
+
 // Initialize EventBus and WebSocket server for communication
 const eventBus = new EventBus();
 
@@ -33,19 +49,19 @@ let connectedClients = new Set();
 
 // Helper function to debug client status
 function debugClientStatus() {
-  console.log('\n🔍🔍🔍 CLIENT STATUS DEBUG 🔍🔍🔍');
-  console.log(`Total connectedClients: ${connectedClients.size}`);
+  conditionalLog('\n🔍🔍🔍 CLIENT STATUS DEBUG 🔍🔍🔍');
+  conditionalLog(`Total connectedClients: ${connectedClients.size}`);
   
   if (connectedClients.size > 0) {
     let index = 1;
     connectedClients.forEach(client => {
-      console.log(`   Client ${index}: readyState=${client.readyState}, url=${client.url || 'unknown'}`);
+      conditionalLog(`   Client ${index}: readyState=${client.readyState}, url=${client.url || 'unknown'}`);
       index++;
     });
   } else {
-    console.log('   No clients connected');
+    conditionalLog('   No clients connected');
   }
-  console.log('🔍🔍🔍 END CLIENT STATUS 🔍🔍🔍\n');
+  conditionalLog('🔍🔍🔍 END CLIENT STATUS 🔍🔍🔍\n');
 }
 
 // Function to analyze notification threats from audit result (similar to stepped scan)
@@ -148,10 +164,10 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
 
 // Function to send TOPIN events to all connected WebSocket clients
 function sendTopinEvent(eventType, data = {}) {
-  console.log(`\n🔥🔥🔥 ===== SENDING TOPIN EVENT ===== 🔥🔥🔥`);
-  console.log(`🔥 Event Type: ${eventType}`);
-  console.log(`🔥 Call from:`, new Error().stack.split('\n')[2].trim());
-  console.log(`🔥 Current timestamp: ${new Date().toISOString()}`);
+  conditionalLog(`\n🔥🔥🔥 ===== SENDING TOPIN EVENT ===== 🔥🔥🔥`);
+  conditionalLog(`🔥 Event Type: ${eventType}`);
+  conditionalLog(`🔥 Call from:`, new Error().stack.split('\n')[2].trim());
+  conditionalLog(`🔥 Current timestamp: ${new Date().toISOString()}`);
   
   const message = {
     type: 'topin_event',
@@ -161,18 +177,18 @@ function sendTopinEvent(eventType, data = {}) {
     source: 'electron_companion_app'
   };
 
-  console.log(`📡 Message to send:`, JSON.stringify(message, null, 2));
-  console.log(`📊 Total connected clients in Set: ${connectedClients.size}`);
+  conditionalLog(`📡 Message to send:`, JSON.stringify(message, null, 2));
+  conditionalLog(`📊 Total connected clients in Set: ${connectedClients.size}`);
   
   // Log all client details
   if (connectedClients.size > 0) {
     let clientIndex = 1;
     connectedClients.forEach(client => {
-      console.log(`   Client ${clientIndex}: readyState=${client.readyState}, url=${client.url || 'unknown'}`);
+      conditionalLog(`   Client ${clientIndex}: readyState=${client.readyState}, url=${client.url || 'unknown'}`);
       clientIndex++;
     });
   } else {
-    console.log('⚠️⚠️⚠️ NO CONNECTED CLIENTS FOUND! ⚠️⚠️⚠️');
+    conditionalLog('⚠️⚠️⚠️ NO CONNECTED CLIENTS FOUND! ⚠️⚠️⚠️');
     return message;
   }
 
@@ -180,29 +196,29 @@ function sendTopinEvent(eventType, data = {}) {
   let clientIndex = 1;
   
   connectedClients.forEach(client => {
-    console.log(`\n🚀 Attempting to send to Client ${clientIndex}:`);
-    console.log(`   ReadyState: ${client.readyState} (1=OPEN, 0=CONNECTING, 2=CLOSING, 3=CLOSED)`);
+    conditionalLog(`\n🚀 Attempting to send to Client ${clientIndex}:`);
+    conditionalLog(`   ReadyState: ${client.readyState} (1=OPEN, 0=CONNECTING, 2=CLOSING, 3=CLOSED)`);
     
     try {
       if (client.readyState === 1) { // WebSocket.OPEN
-        console.log(`   📤 Sending message to Client ${clientIndex}...`);
+        conditionalLog(`   📤 Sending message to Client ${clientIndex}...`);
         client.send(JSON.stringify(message));
         sentCount++;
-        console.log(`   ✅ SUCCESS: Message sent to Client ${clientIndex}`);
+        conditionalLog(`   ✅ SUCCESS: Message sent to Client ${clientIndex}`);
       } else {
-        console.log(`   ❌ FAILED: Client ${clientIndex} not ready (readyState: ${client.readyState})`);
+        conditionalLog(`   ❌ FAILED: Client ${clientIndex} not ready (readyState: ${client.readyState})`);
       }
     } catch (error) {
-      console.error(`   💥 EXCEPTION sending to Client ${clientIndex}:`, error.message);
-      console.error(`   💥 Full error:`, error);
+      conditionalError(`   💥 EXCEPTION sending to Client ${clientIndex}:`, error.message);
+      conditionalError(`   💥 Full error:`, error);
       connectedClients.delete(client);
-      console.log(`   🗑️ Removed dead client ${clientIndex} from connectedClients`);
+      conditionalLog(`   🗑️ Removed dead client ${clientIndex} from connectedClients`);
     }
     clientIndex++;
   });
 
-  console.log(`\n📊 FINAL RESULT: Event "${eventType}" sent to ${sentCount}/${connectedClients.size} clients`);
-  console.log(`🔥🔥🔥 ===== END TOPIN EVENT ===== 🔥🔥🔥\n`);
+  conditionalLog(`\n📊 FINAL RESULT: Event "${eventType}" sent to ${sentCount}/${connectedClients.size} clients`);
+  conditionalLog(`🔥🔥🔥 ===== END TOPIN EVENT ===== 🔥🔥🔥\n`);
   return message;
 }
 
@@ -253,20 +269,20 @@ class LoggingLocalServer extends LocalServer {
 
     // Enhanced connection handler with TOPIN events
     this.wss.on('connection', (ws) => {
-      console.log('\n🔗🔗🔗 NEW WEBSOCKET CLIENT CONNECTED 🔗🔗🔗');
-      console.log(`   Client readyState: ${ws.readyState}`);
-      console.log(`   Client URL: ${ws.url || 'unknown'}`);
-      console.log(`   Client origin: ${ws.headers?.origin || 'unknown'}`);
+      conditionalLog('\n🔗🔗🔗 NEW WEBSOCKET CLIENT CONNECTED 🔗🔗🔗');
+      conditionalLog(`   Client readyState: ${ws.readyState}`);
+      conditionalLog(`   Client URL: ${ws.url || 'unknown'}`);
+      conditionalLog(`   Client origin: ${ws.headers?.origin || 'unknown'}`);
       
       // Add to both local clients and global connected clients
       clients.add(ws);
       connectedClients.add(ws);
       
-      console.log(`   ✅ Added to clients set (size: ${clients.size})`);
-      console.log(`   ✅ Added to connectedClients set (size: ${connectedClients.size})`);
+      conditionalLog(`   ✅ Added to clients set (size: ${clients.size})`);
+      conditionalLog(`   ✅ Added to connectedClients set (size: ${connectedClients.size})`);
       
       // Test immediate send to verify connection
-      console.log('   🧪 Testing immediate send to new client...');
+      conditionalLog('   🧪 Testing immediate send to new client...');
       try {
         const testMessage = JSON.stringify({
           type: 'connection_test',
@@ -274,9 +290,9 @@ class LoggingLocalServer extends LocalServer {
           timestamp: Date.now()
         });
         ws.send(testMessage);
-        console.log('   ✅ Immediate test message sent successfully');
+        conditionalLog('   ✅ Immediate test message sent successfully');
       } catch (error) {
-        console.error('   ❌ Failed to send immediate test message:', error);
+        conditionalError('   ❌ Failed to send immediate test message:', error);
       }
       
       // Send CONNECTED_WITH_TOPIN_WEBSITE event
@@ -292,12 +308,12 @@ class LoggingLocalServer extends LocalServer {
         ws.on('message', async (data) => {
           try {
             const message = JSON.parse(data.toString());
-            console.log('📥 RECEIVED MESSAGE:');
-            console.log('   Raw Data:', data.toString());
-            console.log('   Parsed JSON:', JSON.stringify(message, null, 2));
-            console.log('   Message Type:', message.kind || message.type || 'unknown');
-            console.log('   Timestamp:', new Date().toISOString());
-            console.log('-----------------------------------');
+            conditionalLog('📥 RECEIVED MESSAGE:');
+            conditionalLog('   Raw Data:', data.toString());
+            conditionalLog('   Parsed JSON:', JSON.stringify(message, null, 2));
+            conditionalLog('   Message Type:', message.kind || message.type || 'unknown');
+            conditionalLog('   Timestamp:', new Date().toISOString());
+            conditionalLog('-----------------------------------');
             
             // Handle scan commands
             if (message.type === 'command') {
@@ -305,40 +321,40 @@ class LoggingLocalServer extends LocalServer {
               
               switch (message.action) {
                 case 'start_stepped_scan':
-                  console.log('🎯 WebSocket command: Starting stepped scan');
+                  conditionalLog('🎯 WebSocket command: Starting stepped scan');
                   debugClientStatus();
-                  console.log('🎯 About to call steppedScanManager.startSteppedScan()');
+                  conditionalLog('🎯 About to call steppedScanManager.startSteppedScan()');
                   response = await steppedScanManager.startSteppedScan();
-                  console.log('🎯 Scan response:', JSON.stringify(response, null, 2));
+                  conditionalLog('🎯 Scan response:', JSON.stringify(response, null, 2));
                   break;
                   
                 case 'retry_step1':
-                  console.log('🎯 WebSocket command: Retrying Step 1');
+                  conditionalLog('🎯 WebSocket command: Retrying Step 1');
                   response = await steppedScanManager.retryStep1();
                   break;
                   
                 case 'retry_step2':
-                  console.log('🎯 WebSocket command: Retrying Step 2');
+                  conditionalLog('🎯 WebSocket command: Retrying Step 2');
                   response = await steppedScanManager.retryStep2();
                   break;
                   
                 case 'get_scan_status':
-                  console.log('🎯 WebSocket command: Getting scan status');
+                  conditionalLog('🎯 WebSocket command: Getting scan status');
                   response = steppedScanManager.getScanStatus();
                   break;
                   
                 case 'cancel_scan':
-                  console.log('🎯 WebSocket command: Cancelling scan');
+                  conditionalLog('🎯 WebSocket command: Cancelling scan');
                   response = steppedScanManager.cancelScan();
                   break;
                   
                 case 'reset_scan':
-                  console.log('🎯 WebSocket command: Resetting scan state');
+                  conditionalLog('🎯 WebSocket command: Resetting scan state');
                   response = steppedScanManager.resetScan();
                   break;
                   
                 case 'test_event':
-                  console.log('🎯 WebSocket command: Testing event sending');
+                  conditionalLog('🎯 WebSocket command: Testing event sending');
                   debugClientStatus();
                   sendTopinEvent('TEST_EVENT', {
                     message: 'This is a test event',
@@ -349,7 +365,7 @@ class LoggingLocalServer extends LocalServer {
                   break;
                   
                 case 'debug_clients':
-                  console.log('🎯 WebSocket command: Debug client status');
+                  conditionalLog('🎯 WebSocket command: Debug client status');
                   debugClientStatus();
                   response = { 
                     ok: true, 
@@ -372,7 +388,7 @@ class LoggingLocalServer extends LocalServer {
                 };
                 
                 ws.send(JSON.stringify(responseMessage));
-                console.log('📤 SENT COMMAND RESPONSE:', JSON.stringify(responseMessage, null, 2));
+                conditionalLog('📤 SENT COMMAND RESPONSE:', JSON.stringify(responseMessage, null, 2));
               }
             }
             
@@ -471,7 +487,15 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Initialize RAM-based logging first
+  try {
+    ramInfo = await securityService.initializeLoggingBasedOnRAM();
+    console.log(`🔧 RAM-based logging initialized:`, ramInfo);
+  } catch (error) {
+    console.error('❌ Failed to initialize RAM-based logging:', error);
+  }
+
   createWindow();
 
   // Start WebSocket server to accept incoming connections
@@ -691,7 +715,7 @@ class SteppedScanManager {
 
   async executeStep1() {
     try {
-      console.log('📱 Auditing notification settings...');
+      conditionalLog('📱 Auditing notification settings...');
       
       const auditResult = await notificationService.auditNotifications();
       
@@ -1367,6 +1391,34 @@ ipcMain.handle('app:testTabDetection', async (_evt, browserName) => {
   try {
     const res = await securityService.testTabDetection(browserName);
     return { ok: true, ...res };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// Logging control
+ipcMain.handle('app:setLogging', async (_evt, enabled) => {
+  try {
+    securityService.setLogging(enabled);
+    return { ok: true, enabled };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle('app:getLoggingStatus', async () => {
+  try {
+    const enabled = securityService.getLoggingStatus();
+    return { ok: true, enabled, ramInfo };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// Get RAM information
+ipcMain.handle('app:getRAMInfo', async () => {
+  try {
+    return { ok: true, ramInfo };
   } catch (e) {
     return { ok: false, error: String(e) };
   }
