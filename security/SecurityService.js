@@ -58,7 +58,7 @@ class SecurityService extends EventEmitter {
   // Centralized logging function
   log(message, ...args) {
     if (this.enableLog) {
-      console.log(message, ...args);
+      // console.log(message, ...args);
     }
   }
 
@@ -1039,6 +1039,100 @@ class SecurityService extends EventEmitter {
     return threats;
   }
 
+  // Enumerate open browsers and return only tabs that are actively sharing screen
+  async getActiveScreenSharingTabs() {
+    const result = [];
+    try {
+      // 1) Identify main browser processes
+      const processesRes = await this.safe('processes', () => si.processes(), 4000);
+      const list = (processesRes.list || []);
+      const browserNames = ['chrome','chromium','firefox','edge','brave','opera','safari'];
+      const isMainBrowserProc = (n) => {
+        const name = (n || '').toLowerCase();
+        return browserNames.some(b => name.includes(b)) &&
+               !name.includes('helper') && !name.includes('agent') &&
+               !name.includes('crashpad') && !name.includes('zygote') &&
+               !name.includes('utility') && !name.includes('renderer') &&
+               !name.includes('gpu') && !name.includes('webview') &&
+               !name.includes('notification');
+      };
+      const browserProcs = [];
+      for (const p of list) {
+        if (!p || (!p.name && !p.command)) continue;
+        const name = (p.name || '').toLowerCase();
+        const cmd = (p.command || '').toLowerCase();
+        if (this.isSystemHelper(name, cmd)) continue;
+        if (isMainBrowserProc(p.name || '')) browserProcs.push(p);
+      }
+
+      if (browserProcs.length === 0) return [];
+
+      // 2) Detect active WebRTC sharing per PID and collect any tab hints
+      const webrtcThreats = await this.detectChromeScreenSharing(browserProcs);
+      const activeByPid = new Map();
+      for (const t of (webrtcThreats || [])) {
+        if (t && t.type === 'screen_sharing_process_webrtc' && t.details && t.details.pid) {
+          const pid = t.details.pid;
+          const entry = activeByPid.get(pid) || { pid, webrtcConnections: 0, tabs: [], hints: {} };
+          entry.webrtcConnections = Math.max(entry.webrtcConnections || 0, Number(t.details.connections || 0));
+          if (Array.isArray(t.details.sharingTabs) && t.details.sharingTabs.length) {
+            entry.tabs = t.details.sharingTabs.map(x => ({ title: x.title || '', url: x.url || '', windowIndex: x.windowIndex || null, tabIndex: x.tabIndex || null }));
+          } else if (t.details.tabTitle) {
+            entry.tabs = [{ title: t.details.tabTitle || '', url: t.details.tabUrl || '' }];
+          }
+          activeByPid.set(pid, entry);
+        }
+      }
+
+      // 3) On Linux, add PipeWire screencast evidence
+      let pipewireByPid = new Set();
+      if (process.platform === 'linux') {
+        try {
+          const pipe = await this.detectPipeWireScreencast();
+          pipewireByPid = new Set((pipe || []).map(t => t && t.details && t.details.pid).filter(Boolean));
+          for (const pid of pipewireByPid) {
+            const entry = activeByPid.get(pid) || { pid, webrtcConnections: 0, tabs: [], hints: {} };
+            entry.pipewire = true;
+            activeByPid.set(pid, entry);
+          }
+        } catch {}
+      }
+
+      // 4) Build per-browser results; only include those with active evidence and sharing tabs
+      for (const p of browserProcs) {
+        const pid = p.pid;
+        const name = p.name || 'browser';
+        const lower = (name || '').toLowerCase();
+        const browser = lower.includes('chromium') ? 'Chromium'
+          : lower.includes('chrome') ? 'Chrome'
+          : lower.includes('edge') ? 'Edge'
+          : lower.includes('brave') ? 'Brave'
+          : lower.includes('opera') ? 'Opera'
+          : lower.includes('safari') ? 'Safari'
+          : lower.includes('firefox') ? 'Firefox'
+          : name;
+        const evidence = activeByPid.get(pid) || null;
+        const hasActive = Boolean(evidence && (evidence.webrtcConnections > 0 || evidence.pipewire));
+
+        // Ensure we have tab list; if not, try to resolve now
+        let tabs = (evidence && evidence.tabs) ? evidence.tabs : [];
+        if (tabs.length === 0) {
+          try {
+            const allTabs = await this.getAllTabsForBrowser(lower);
+            if (Array.isArray(allTabs) && allTabs.length) {
+              tabs = allTabs.map(x => ({ title: x.title || '', url: x.url || '', windowIndex: x.windowIndex || null, tabIndex: x.tabIndex || null }));
+            }
+          } catch {}
+        }
+
+        // Only include browsers with both active evidence and at least one sharing tab
+        if (hasActive && tabs.length > 0) {
+          result.push({ pid, processName: name, browser, tabs, evidence: { webrtcConnections: evidence.webrtcConnections || 0, pipewire: Boolean(evidence.pipewire) } });
+        }
+      }
+    } catch {}
+    return result;
+  }
   async getAllTabsForBrowser(browserName) {
     const allTabs = [];
     const keywords = ['meet','zoom','teams','webex','discord','present','is presenting','sharing','share this tab','screen share','screenshare','sharing screen','sharing your screen','you are sharing','screen sharing','screen-sharing','jitsi','whereby','appear.in','hang','call','video call','conference'];
@@ -1727,27 +1821,54 @@ class SecurityService extends EventEmitter {
     const map = new Map([
       ['teams','Microsoft Teams'], ['microsoft teams','Microsoft Teams'], ['ms teams','Microsoft Teams'], ['msteams','Microsoft Teams'],
       ['zoom','Zoom'], ['skype','Skype'], ['webex','Webex'], ['discord','Discord'], ['slack','Slack'],
+      ['whatsapp','WhatsApp'], ['telegram','Telegram'], ['signal','Signal'], ['messenger','Messenger'], ['facebook messenger','Messenger'], ['fb messenger','Messenger'],
+      ['wechat','WeChat'], ['line','LINE'], ['viber','Viber'],
       ['chrome','Chrome'], ['chromium','Chromium'], ['edge','Edge'], ['msedge','Edge'], ['brave','Brave'], ['firefox','Firefox'], ['safari','Safari'], ['meet','Google Meet']
     ]);
     const key = String(match || '').toLowerCase();
     return map.get(key) || fallback || match || '';
   }
+  
+  // Prevent substring false-positives (e.g., 'line' in 'online-auth-agent')
+  findMessagingAppKey(nameLower, cmdLower) {
+    const text = `${nameLower} ${cmdLower}`;
+    const candidates = [
+      { key: 'teams', patterns: [/\bmicrosoft\s+teams\b/i, /\bmsteams\b/i, /\bteams\b/i] },
+      { key: 'discord', patterns: [/\bdiscord\b/i] },
+      { key: 'slack', patterns: [/\bslack\b/i] },
+      { key: 'zoom', patterns: [/\bzoom\b/i] },
+      { key: 'skype', patterns: [/\bskype\b/i] },
+      { key: 'webex', patterns: [/\bwebex\b/i] },
+      { key: 'whatsapp', patterns: [/\bwhatsapp\b/i] },
+      { key: 'telegram', patterns: [/\btelegram\b/i] },
+      { key: 'signal', patterns: [/\bsignal(?:-desktop)?\b/i] },
+      { key: 'messenger', patterns: [/\bfacebook\s+messenger\b/i, /\bmessenger\b/i] },
+      { key: 'wechat', patterns: [/\bwechat\b/i] },
+      // LINE: avoid matching inside other words like "online"; require boundaries or app filenames
+      { key: 'line', patterns: [/(?:^|[\\\\/\s])line(?:\.app|\.exe)?(?:[\\\\/\s]|$)/i, /\bnaver\s*line\b/i, /^line$/i] },
+      { key: 'viber', patterns: [/\bviber\b/i] }
+    ];
+    for (const c of candidates) {
+      if (c.patterns.some(r => r.test(nameLower) || r.test(text))) return c.key;
+    }
+    return null;
+  }
   async checkMessagingApplications() {
     const threats = [];
     try {
       const proc = await this.safe('processes', () => si.processes(), 4000);
-      const apps = ['teams','microsoft teams','discord','slack','zoom','skype','webex'];
       for (const p of (proc.list || [])) {
         const name = (p.name || '').toLowerCase();
         const cmd = (p.command || '').toLowerCase();
         if (this.isSystemHelper(name, cmd) || this.isInstallerContext(cmd)) continue;
-        const matched = apps.find(a => name.includes(a) || cmd.includes(a));
-        if (!matched) continue;
+        const matchedKey = this.findMessagingAppKey(name, cmd);
+        if (!matchedKey) continue;
+        const display = this.getDisplayNameForApp(matchedKey, p.name);
         threats.push({
           type: 'messaging_app_detected',
           severity: 'medium',
-          message: `Messaging/meeting app detected: ${p.name}`,
-          details: { pid: p.pid }
+          message: `Messaging/meeting app detected: ${display}`,
+          details: { pid: p.pid, processName: p.name, match: matchedKey }
         });
       }
     } catch {}
@@ -1765,6 +1886,7 @@ class SecurityService extends EventEmitter {
       this.detectActiveScreenCapture(),
       this.detectClipboardSynchronization(),
       this.checkVirtualMachine(),
+      this.checkMessagingApplications(),
       this.checkMaliciousSignatures(signatures),
       // Platform-specific add-ons
       this.detectWindowsRemoteDesktop(),

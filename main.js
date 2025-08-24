@@ -470,12 +470,21 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
+  // Debug helper: open DevTools automatically if env var set
+  if (process.env.TOPIN_OPEN_DEVTOOLS === '1') {
+    try { mainWindow.webContents.openDevTools({ mode: 'detach' }); } catch {}
+  }
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 }
 
 app.whenReady().then(() => {
+  // Route Chromium logs to macOS Console when needed
+  if (process.env.TOPIN_ENABLE_LOGGING === '1') {
+    try { app.commandLine.appendSwitch('enable-logging'); } catch {}
+  }
   // Add a small delay to prevent race conditions on macOS
   setTimeout(() => {
     createWindow();
@@ -582,6 +591,7 @@ async function scanSystem() {
 }
 
 ipcMain.handle('app:getNotificationStatus', async () => notificationService.getNotificationStatus());
+ipcMain.handle('app:getFocusStatus', async () => notificationService.getFocusStatus());
 ipcMain.handle('app:openNotificationSettings', async () => notificationService.openNotificationSettings());
 ipcMain.handle('app:auditNotifications', async (_evt, _providedScanId) => {
   try {
@@ -1397,6 +1407,7 @@ ipcMain.handle('app:testTabDetection', async (_evt, browserName) => {
 ipcMain.handle('app:setLogging', async (_evt, enabled) => {
   try {
     securityService.setLogging(enabled);
+    try { notificationService.setLogging(enabled); } catch {}
     return { ok: true, enabled };
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -1406,7 +1417,37 @@ ipcMain.handle('app:setLogging', async (_evt, enabled) => {
 ipcMain.handle('app:getLoggingStatus', async () => {
   try {
     const enabled = securityService.getLoggingStatus();
+    try { if (enabled) notificationService.setLogging(true); } catch {}
     return { ok: true, enabled };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// NotificationService-only logging controls
+ipcMain.handle('app:setNotificationLogging', async (_evt, enabled) => {
+  try {
+    notificationService.setLogging(!!enabled);
+    return { ok: true, enabled: !!enabled };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle('app:getNotificationLoggingStatus', async () => {
+  try {
+    const enabled = !!notificationService.getLoggingStatus();
+    return { ok: true, enabled };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// List only actively sharing tabs in currently open browsers
+ipcMain.handle('app:listActiveSharingTabs', async () => {
+  try {
+    const tabs = await securityService.getActiveScreenSharingTabs();
+    return { ok: true, tabs };
   } catch (e) {
     return { ok: false, error: String(e) };
   }

@@ -1,4 +1,5 @@
 const notifStatusEl = document.getElementById('notifStatus');
+const focusStatusEl = document.getElementById('focusStatus');
 const scanBtn = document.getElementById('scanBtn');
 const globalStatusEl = document.getElementById('globalStatus');
 const globalHintEl = document.getElementById('globalHint');
@@ -14,6 +15,33 @@ function setNotifStatus(status){
   }
   notifStatusEl.textContent = status.enabledLikely ? 'ON' : 'OFF';
   notifStatusEl.style.background = status.enabledLikely ? '#284047' : '#2b3a20';
+}
+
+async function setFocusStatus(){
+  try {
+    const res = await window.companion.getFocusStatus();
+    console.log(res,'pppppppppppppppwww')
+    if (!focusStatusEl) return;
+    if (!res || res.supported === false) {
+      focusStatusEl.textContent = 'Focus: Unsupported';
+      focusStatusEl.style.background = '#4b2738';
+      return;
+    }
+    const on = String(res.focus || '').toLowerCase() === 'on';
+    let modeSuffix = '';
+    if (Array.isArray(res.modes) && res.modes.length) {
+      modeSuffix = ` (${res.modes[0]})`;
+    }
+    focusStatusEl.textContent = `Focus: ${on ? 'ON' : 'OFF'}${modeSuffix}`;
+    focusStatusEl.style.background = on ? '#284047' : '#2b3a20';
+    focusStatusEl.title = res.details || '';
+  } catch (e) {
+    if (focusStatusEl) {
+      focusStatusEl.textContent = 'Focus: Unknown';
+      focusStatusEl.style.background = '#4b2738';
+      focusStatusEl.title = String(e.message || e);
+    }
+  }
 }
 
 let isChecking = false;
@@ -73,6 +101,8 @@ async function runSystemCheck(){
   globalHintEl.textContent = 'Running security checks for malicious software and activity';
   suspiciousListEl.innerHTML = '';
   try {
+    // Refresh focus badge at scan start
+    try { await setFocusStatus(); } catch {}
     // Run both checks together in main for consistent results
     const res = await window.companion.completeSystemCheck();
     if (!res.ok) throw new Error(res.error || 'Scan failed');
@@ -190,6 +220,12 @@ async function runSystemCheck(){
     scanBtn.textContent = scanBtnDefaultText;
     scanBtn.disabled = false;
     isChecking = false;
+    // Refresh focus and notif badges after scan
+    try {
+      const notif = await window.companion.getNotificationStatus();
+      setNotifStatus(notif);
+    } catch {}
+    try { await setFocusStatus(); } catch {}
   }
 }
 
@@ -204,6 +240,8 @@ scanBtn.addEventListener('click', runSystemCheck);
       console.warn('Browser tab permission check failed', perm);
     }
   } catch {}
+  // Load initial focus status (macOS)
+  try { await setFocusStatus(); } catch {}
   if (unsubscribeAutoScan) { try { unsubscribeAutoScan(); } catch {} }
   unsubscribeAutoScan = window.companion.onAutoScanResult(() => {
     if (!isChecking) runSystemCheck();

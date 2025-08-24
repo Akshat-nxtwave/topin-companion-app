@@ -2,6 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('companion', {
   getNotificationStatus: () => ipcRenderer.invoke('app:getNotificationStatus'),
+  getFocusStatus: () => ipcRenderer.invoke('app:getFocusStatus'),
+  setNotificationLogging: (enabled) => ipcRenderer.invoke('app:setNotificationLogging', enabled),
+  getNotificationLoggingStatus: () => ipcRenderer.invoke('app:getNotificationLoggingStatus'),
   openNotificationSettings: () => ipcRenderer.invoke('app:openNotificationSettings'),
   openGuide: (kind) => ipcRenderer.invoke('app:openGuide', kind),
   // Accept optional scanId to pair events across calls
@@ -33,6 +36,7 @@ contextBridge.exposeInMainWorld('companion', {
   testTabDetection: (browserName) => ipcRenderer.invoke('app:testTabDetection', browserName),
   setLogging: (enabled) => ipcRenderer.invoke('app:setLogging', enabled),
   getLoggingStatus: () => ipcRenderer.invoke('app:getLoggingStatus'),
+  getActiveSharingTabs: () => ipcRenderer.invoke('app:listActiveSharingTabs'),
   onWebSocketMessage: (handler) => {
     const listener = (_evt, message) => handler(message);
     ipcRenderer.on('websocket:message', listener);

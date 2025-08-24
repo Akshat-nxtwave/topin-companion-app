@@ -4,13 +4,65 @@ const fs = require('fs');
 const { exec } = require('child_process');
 const si = require('systeminformation');
 
+// macOS 12+ (Monterey and later): system-wide Focus state database
+const FOCUS_STATE_DB_PATH = '/private/var/db/DoNotDisturb/DB.json';
+
 class NotificationService {
+  constructor() {
+    this.logging = true;
+  }
+
+  setLogging(enabled) {
+    this.logging = !!enabled;
+  }
+
+  getLoggingStatus() {
+    return !!this.logging;
+  }
+
+  #log(...args) {
+    if (this.logging || true) {
+      try { console.log('[NotificationService]', ...args); } catch {}
+    }
+  }
+
   async getNotificationStatus() {
     try {
       const supported = require('electron').Notification.isSupported();
-      return { supported, enabledLikely: false, state: 'unknown' };
+      const sys = await this.#detectSystemNotificationSetting();
+      this.#log('getNotificationStatus()', { supported, sys });
+      const enabledLikely = String(sys.status || '').toLowerCase() === 'enabled';
+      return { supported, enabledLikely, state: sys.status || 'unknown', details: sys.details || '' };
     } catch (e) {
+      this.#log('getNotificationStatus() error', String(e));
       return { supported: false, enabledLikely: false, state: 'unknown', error: String(e) };
+    }
+  }
+
+  async getFocusStatus() {
+    try {
+      const platform = process.platform;
+      if (platform !== 'darwin') {
+        return { platform, supported: false, focus: 'unknown', details: 'Focus mode detection only on macOS' };
+      }
+      // Prefer Assertions.json, then fallback to DB.json
+      const viaAssertions = await this.#detectMacFocusViaAssertions();
+      if (viaAssertions) { this.#log('getFocusStatus via Assertions', viaAssertions); return { platform: 'darwin', supported: true, focus: viaAssertions.focusOn ? 'on' : 'off', details: viaAssertions.details, modes: viaAssertions.modes || [] }; }
+      const viaDb = await this.#detectMacFocusViaDb();
+      if (viaDb) { this.#log('getFocusStatus via DB.json', viaDb); return { platform: 'darwin', supported: true, focus: viaDb.focusOn ? 'on' : 'off', details: viaDb.details, modes: viaDb.modes || (viaDb.mode ? [viaDb.mode] : []) }; }
+      // Fallback: legacy defaults key; interpret DoNotDisturb=1 as Focus ON
+      return await new Promise(resolve => {
+        exec('/usr/bin/defaults -currentHost read com.apple.notificationcenterui doNotDisturb', (err, stdout) => {
+          if (err) return resolve({ platform: 'darwin', supported: true, focus: 'unknown', details: 'defaults read failed' });
+          const val = (stdout || '').trim();
+          if (val === '1') return resolve({ platform: 'darwin', supported: true, focus: 'on', details: 'DoNotDisturb=1' });
+          if (val === '0') return resolve({ platform: 'darwin', supported: true, focus: 'off', details: 'DoNotDisturb=0' });
+          resolve({ platform: 'darwin', supported: true, focus: 'unknown', details: `DoNotDisturb=${val}` });
+        });
+      });
+    } catch (e) {
+      this.#log('getFocusStatus() error', String(e));
+      return { platform: process.platform, supported: false, focus: 'unknown', details: String(e) };
     }
   }
 
@@ -83,6 +135,16 @@ class NotificationService {
   async #detectSystemNotificationSetting() {
     const platform = process.platform;
     const result = { platform, status: 'unknown', details: '' };
+    // Prefer modern macOS Focus detection via Assertions.json when on darwin
+    if (platform === 'darwin') {
+      try {
+        // Try Assertions.json first (matches shell logic), then DB.json
+        const focus = await this.#detectMacFocusViaAssertions();
+        if (focus) { this.#log('#detectSystemNotificationSetting darwin via Assertions', focus); return { platform: 'darwin', status: focus.focusOn ? 'disabled' : 'enabled', details: focus.details }; }
+        const viaDb = await this.#detectMacFocusViaDb();
+        if (viaDb) { this.#log('#detectSystemNotificationSetting darwin via DB.json', viaDb); return { platform: 'darwin', status: viaDb.focusOn ? 'disabled' : 'enabled', details: viaDb.details }; }
+      } catch {}
+    }
     if (platform === 'win32') {
       return new Promise(resolve => {
         exec('reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications" /v ToastEnabled', (err, stdout) => {
@@ -90,6 +152,7 @@ class NotificationService {
           const m = stdout.match(/ToastEnabled\s+REG_DWORD\s+0x([0-9a-f]+)/i);
           if (m) { const val = parseInt(m[1], 16); result.status = val === 1 ? 'enabled' : 'disabled'; result.details = `ToastEnabled=${val}`; }
           else { result.details = 'ToastEnabled not found'; }
+          this.#log('#detectSystemNotificationSetting win32', result);
           resolve(result);
         });
       });
@@ -102,6 +165,7 @@ class NotificationService {
           if (val === '1') { result.status = 'disabled'; result.details = 'DoNotDisturb=1'; }
           else if (val === '0') { result.status = 'enabled'; result.details = 'DoNotDisturb=0'; }
           else { result.details = `DoNotDisturb=${val}`; }
+          this.#log('#detectSystemNotificationSetting darwin fallback defaults', result);
           resolve(result);
         });
       });
@@ -113,9 +177,82 @@ class NotificationService {
         if (val === 'true') { result.status = 'enabled'; result.details = 'show-banners=true'; }
         else if (val === 'false') { result.status = 'disabled'; result.details = 'show-banners=false'; }
         else { result.details = `show-banners=${val}`; }
+        this.#log('#detectSystemNotificationSetting linux', result);
         resolve(result);
       });
     });
+  }
+
+  async #detectMacFocusViaAssertions() {
+    try {
+      const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
+      const assertionsPath = path.join(home, 'Library', 'DoNotDisturb', 'DB', 'Assertions.json');
+      if (!fs.existsSync(assertionsPath)) return null;
+      return await new Promise(resolve => {
+        const cmd = `/usr/bin/plutil -convert json -o - ${assertionsPath}`;
+        exec(cmd, { timeout: 1500 }, (err, stdout) => {
+          if (err || !stdout) { this.#log('#detectMacFocusViaAssertions plutil error', String(err)); return resolve(null); }
+          try {
+            const data = JSON.parse(stdout);
+            const entries = Array.isArray(data?.data) ? data.data : [];
+            const first = entries.length ? entries[0] : null;
+            const records = Array.isArray(first?.storeAssertionRecords) ? first.storeAssertionRecords : [];
+            const last = records.length ? records[records.length - 1] : null;
+            const modeIdentifier = last?.assertionDetails?.assertionDetailsModeIdentifier;
+            // Only treat Do Not Disturb default as ON per requirement
+            const isDndDefault = modeIdentifier === 'com.apple.donotdisturb.mode.default';
+            // Map to friendly name (for display), but ON only if DND default
+            const idLower = String(modeIdentifier || '').toLowerCase();
+            let mode = '';
+            if (idLower.includes('donotdisturb')) mode = 'Do Not Disturb';
+            else if (idLower.includes('work')) mode = 'Work';
+            else if (idLower.includes('personal')) mode = 'Personal';
+            else if (idLower.includes('sleep')) mode = 'Sleep';
+            if (!modeIdentifier) {
+              const details = 'Focus=OFF (Assertions.json)';
+              this.#log('#detectMacFocusViaAssertions OFF', { dataEntries: entries.length, records: records.length });
+              return resolve({ platform: 'darwin', status: 'enabled', details, focusOn: false, modes: [] });
+            }
+            const details = `Focus=${isDndDefault ? 'ON' : 'OFF'} (Assertions.json) mode=${modeIdentifier}`;
+            this.#log('#detectMacFocusViaAssertions MODE', { modeIdentifier, mapped: mode || modeIdentifier, isDndDefault });
+            resolve({ platform: 'darwin', status: isDndDefault ? 'disabled' : 'enabled', details, focusOn: isDndDefault, modes: mode ? [mode] : [modeIdentifier] });
+          } catch {
+            this.#log('#detectMacFocusViaAssertions parse error');
+            resolve(null);
+          }
+        });
+      });
+    } catch {
+      this.#log('#detectMacFocusViaAssertions exception');
+      return null;
+    }
+  }
+
+  async #detectMacFocusViaDb() {
+    try {
+      if (!fs.existsSync(FOCUS_STATE_DB_PATH)) return null;
+      const raw = fs.readFileSync(FOCUS_STATE_DB_PATH, 'utf8');
+      const json = JSON.parse(raw);
+      const entries = Array.isArray(json?.data) ? json.data : [];
+      if (!entries.length) return { focusOn: false, details: 'DB.json: no data' };
+      const latest = entries[0];
+      const records = Array.isArray(latest.storeAssertionRecords) ? latest.storeAssertionRecords : [];
+      if (!records.length) return { focusOn: false, details: 'DB.json: no active assertions' };
+      const current = records[0];
+      const modeIdentifier = current?.assertionDetails?.assertionDetailsModeIdentifier || '';
+      let mode = 'Unknown';
+      const idLower = String(modeIdentifier || '').toLowerCase();
+      if (idLower.includes('donotdisturb')) mode = 'Do Not Disturb';
+      else if (idLower.includes('work')) mode = 'Work Focus';
+      else if (idLower.includes('personal')) mode = 'Personal';
+      else if (idLower.includes('sleep')) mode = 'Sleep';
+      const details = `Focus=ON (DB.json) mode=${mode} start=${current?.assertionStartDateTimestamp ?? ''}`;
+      this.#log('#detectMacFocusViaDb', { modeIdentifier, mapped: mode });
+      return { focusOn: true, mode, details };
+    } catch {
+      this.#log('#detectMacFocusViaDb exception');
+      return null;
+    }
   }
 
   async #detectBrowserNotificationSettings() {
