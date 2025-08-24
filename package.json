@@ -9,7 +9,7 @@
   },
   "license": "MIT",
   "scripts": {
-    "start": "electron .",
+    "start": "ELECTRON_DISABLE_SANDBOX=1 electron .",
     "dev": "electron .",
     "start:win": "electron .",
     "pack": "electron-builder --dir",

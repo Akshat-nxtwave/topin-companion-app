@@ -235,6 +235,18 @@ class SecurityService extends EventEmitter {
       return true;
     }
     
+    // TeamViewer daemon (teamviewerd): treat as non-threatening background helper
+    // Do NOT exclude main TeamViewer app (e.g., "teamviewer")
+    if (
+      name === 'teamviewerd' ||
+      cmd.includes('/teamviewerd') ||
+      cmd.includes('\\teamviewerd') ||
+      cmd.includes('tv_bin/teamviewerd')
+    ) {
+      this.log(`🔧 Excluding TeamViewer daemon: ${processName}`);
+      return true;
+    }
+    
     // CoreAudio / Drivers / Kexts / HAL plugins
     if (name.includes('.driver') || cmd.includes('.driver')) return true;
     if (name.includes('kext') || cmd.includes('kext')) return true;

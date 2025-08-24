@@ -43,7 +43,16 @@ class NotificationService {
     try {
       const platform = process.platform;
       if (platform !== 'darwin') {
-        return { platform, supported: false, focus: 'unknown', details: 'Focus mode detection only on macOS' };
+        // Linux best-effort detection for common desktops (GNOME, KDE/Plasma, XFCE)
+        if (platform === 'linux') {
+          const linux = await this.#detectLinuxFocusStatus();
+          if (linux) {
+            this.#log('getFocusStatus linux', linux);
+            return { platform: 'linux', supported: true, focus: linux.focusOn ? 'on' : 'off', details: linux.details, modes: linux.modes || [] };
+          }
+          return { platform: 'linux', supported: false, focus: 'unknown', details: 'Focus/DND detection not available for this desktop' };
+        }
+        return { platform, supported: false, focus: 'unknown', details: 'Focus mode detection only on macOS/Linux' };
       }
       // Prefer Assertions.json, then fallback to DB.json
       const viaAssertions = await this.#detectMacFocusViaAssertions();
@@ -251,6 +260,68 @@ class NotificationService {
       return { focusOn: true, mode, details };
     } catch {
       this.#log('#detectMacFocusViaDb exception');
+      return null;
+    }
+  }
+
+  async #detectLinuxFocusStatus() {
+    try {
+      const envDesktop = (process.env.XDG_CURRENT_DESKTOP || process.env.DESKTOP_SESSION || '').toLowerCase();
+      const isGNOME = envDesktop.includes('gnome') || envDesktop.includes('unity') || envDesktop.includes('cinnamon');
+      const isXFCE = envDesktop.includes('xfce');
+      const isKDE = envDesktop.includes('kde') || envDesktop.includes('plasma');
+
+      // GNOME/Cinnamon: gsettings show-banners=false => DND ON
+      if (isGNOME) {
+        return await new Promise(resolve => {
+          exec('gsettings get org.gnome.desktop.notifications show-banners', (err, stdout) => {
+            if (err || !stdout) return resolve(null);
+            const val = (stdout || '').trim();
+            const focusOn = (val === 'false');
+            const details = `GNOME show-banners=${val}`;
+            resolve({ focusOn, details, modes: ['Do Not Disturb'] });
+          });
+        });
+      }
+
+      // KDE/Plasma: kreadconfig5 kdeglobals Notifications DoNotDisturb=true => DND ON
+      if (isKDE) {
+        return await new Promise(resolve => {
+          exec('kreadconfig5 --file kdeglobals --group Notifications --key DoNotDisturb 2>/dev/null', (err, stdout) => {
+            if (err) return resolve(null);
+            const val = (stdout || '').trim().toLowerCase();
+            if (!val) return resolve(null);
+            const focusOn = (val === 'true' || val === '1');
+            const details = `KDE DoNotDisturb=${val}`;
+            resolve({ focusOn, details, modes: ['Do Not Disturb'] });
+          });
+        });
+      }
+
+      // XFCE: xfconf-query -c xfce4-notifyd -p /do-not-disturb => true/false
+      if (isXFCE) {
+        return await new Promise(resolve => {
+          exec('xfconf-query -c xfce4-notifyd -p /do-not-disturb 2>/dev/null', (err, stdout) => {
+            if (err || !stdout) return resolve(null);
+            const val = (stdout || '').trim().toLowerCase();
+            const focusOn = (val === 'true' || val === '1');
+            const details = `XFCE do-not-disturb=${val}`;
+            resolve({ focusOn, details, modes: ['Do Not Disturb'] });
+          });
+        });
+      }
+
+      // Fallback: try GNOME schema even if desktop unknown
+      return await new Promise(resolve => {
+        exec('gsettings get org.gnome.desktop.notifications show-banners', (err, stdout) => {
+          if (err || !stdout) return resolve(null);
+          const val = (stdout || '').trim();
+          const focusOn = (val === 'false');
+          const details = `GNOME(show-banners)=${val}`;
+          resolve({ focusOn, details, modes: ['Do Not Disturb'] });
+        });
+      });
+    } catch {
       return null;
     }
   }
