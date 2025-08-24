@@ -43,6 +43,15 @@ class NotificationService {
     try {
       const platform = process.platform;
       if (platform !== 'darwin') {
+        // Windows Focus Assist detection
+        if (platform === 'win32') {
+          const windows = await this.#detectWindowsFocusStatus();
+          if (windows) {
+            this.#log('getFocusStatus windows', windows);
+            return { platform: 'win32', supported: true, focus: windows.focusOn ? 'on' : 'off', details: windows.details, modes: windows.modes || [] };
+          }
+          return { platform: 'win32', supported: false, focus: 'unknown', details: 'Focus Assist detection not available' };
+        }
         // Linux best-effort detection for common desktops (GNOME, KDE/Plasma, XFCE)
         if (platform === 'linux') {
           const linux = await this.#detectLinuxFocusStatus();
@@ -52,7 +61,7 @@ class NotificationService {
           }
           return { platform: 'linux', supported: false, focus: 'unknown', details: 'Focus/DND detection not available for this desktop' };
         }
-        return { platform, supported: false, focus: 'unknown', details: 'Focus mode detection only on macOS/Linux' };
+        return { platform, supported: false, focus: 'unknown', details: 'Focus mode detection only on macOS/Linux/Windows' };
       }
       // Prefer Assertions.json, then fallback to DB.json
       const viaAssertions = await this.#detectMacFocusViaAssertions();
@@ -155,15 +164,38 @@ class NotificationService {
       } catch {}
     }
     if (platform === 'win32') {
-      return new Promise(resolve => {
-        exec('reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications" /v ToastEnabled', (err, stdout) => {
-          if (err || !stdout) { result.details = 'Registry query failed'; return resolve(result); }
-          const m = stdout.match(/ToastEnabled\s+REG_DWORD\s+0x([0-9a-f]+)/i);
-          if (m) { const val = parseInt(m[1], 16); result.status = val === 1 ? 'enabled' : 'disabled'; result.details = `ToastEnabled=${val}`; }
-          else { result.details = 'ToastEnabled not found'; }
-          this.#log('#detectSystemNotificationSetting win32', result);
+      return new Promise(async (resolve) => {
+        try {
+          // First check if Focus Assist is enabled (which disables notifications)
+          const focusStatus = await this.#detectWindowsFocusStatus();
+          if (focusStatus && focusStatus.focusOn) {
+            result.status = 'disabled';
+            result.details = `Focus Assist: ${focusStatus.details}`;
+            this.#log('#detectSystemNotificationSetting win32 focus', result);
+            return resolve(result);
+          }
+
+          // Check basic notification settings
+          exec('reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications" /v ToastEnabled', (err, stdout) => {
+            if (err || !stdout) { 
+              result.details = 'Registry query failed'; 
+              return resolve(result); 
+            }
+            const m = stdout.match(/ToastEnabled\s+REG_DWORD\s+0x([0-9a-f]+)/i);
+            if (m) { 
+              const val = parseInt(m[1], 16); 
+              result.status = val === 1 ? 'enabled' : 'disabled'; 
+              result.details = `ToastEnabled=${val}`; 
+            } else { 
+              result.details = 'ToastEnabled not found'; 
+            }
+            this.#log('#detectSystemNotificationSetting win32', result);
+            resolve(result);
+          });
+        } catch (e) {
+          result.details = `Error: ${String(e)}`;
           resolve(result);
-        });
+        }
       });
     }
     if (platform === 'darwin') {
@@ -322,6 +354,193 @@ class NotificationService {
         });
       });
     } catch {
+      return null;
+    }
+  }
+
+  async #detectWindowsFocusStatus() {
+    try {
+      // Method 1: Check Windows Focus Assist via WNF state data (most reliable)
+      const wnfResult = await new Promise(resolve => {
+        const wnfScript = `$source = @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class FocusAssistQuery {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WNF_STATE_NAME {
+        public uint Data1;
+        public uint Data2;
+        public WNF_STATE_NAME(uint d1, uint d2) { Data1 = d1; Data2 = d2; }
+    }
+
+    [DllImport("ntdll.dll", SetLastError = true)]
+    private static extern int NtQueryWnfStateData(
+        ref WNF_STATE_NAME StateName,
+        IntPtr TypeId,
+        IntPtr ExplicitScope,
+        out uint ChangeStamp,
+        out uint Buffer,
+        ref uint BufferSize
+    );
+
+    public static int GetFocusAssistState() {
+        var stateName = new WNF_STATE_NAME(0xA3BF1C75, 0x0D83063E); 
+        uint changeStamp, buffer = 0, size = 4;
+        int result = NtQueryWnfStateData(ref stateName, IntPtr.Zero, IntPtr.Zero, out changeStamp, out buffer, ref size);
+        return result == 0 ? (int)buffer : -1;
+    }
+}
+"@
+
+Add-Type $source
+$state = [FocusAssistQuery]::GetFocusAssistState()
+Write-Output $state`;
+        
+        // Use a temporary file to avoid PowerShell escaping issues
+        const tempScriptPath = path.join(os.tmpdir(), 'focus-assist-test.ps1');
+        try {
+          fs.writeFileSync(tempScriptPath, wnfScript, 'utf8');
+          
+          exec(`powershell -ExecutionPolicy Bypass -File "${tempScriptPath}"`, (err, stdout) => {
+            // Clean up temp file
+            try { fs.unlinkSync(tempScriptPath); } catch {}
+            
+            if (err) {
+              this.#log('#detectWindowsFocusStatus WNF PowerShell error', String(err));
+              return resolve(null);
+            }
+            
+            if (!stdout) {
+              this.#log('#detectWindowsFocusStatus WNF no output');
+              return resolve(null);
+            }
+            
+            try {
+              const state = parseInt(stdout.trim(), 10);
+              if (isNaN(state)) {
+                this.#log('#detectWindowsFocusStatus WNF invalid output', stdout.trim());
+                return resolve(null);
+              }
+              
+              let focusOn = false;
+              let details = '';
+              let modes = [];
+              
+              switch (state) {
+                case 0:
+                  focusOn = false;
+                  details = 'Windows Focus Assist: OFF (WNF)';
+                  modes = ['Focus Assist'];
+                  break;
+                case 1:
+                  focusOn = true;
+                  details = 'Windows Focus Assist: ON - Priority only (WNF)';
+                  modes = ['Focus Assist - Priority'];
+                  break;
+                case 2:
+                  focusOn = true;
+                  details = 'Windows Focus Assist: ON - Alarms only (WNF)';
+                  modes = ['Focus Assist - Alarms'];
+                  break;
+                case -1:
+                  // WNF query failed, fall through to other methods
+                  this.#log('#detectWindowsFocusStatus WNF query failed');
+                  return resolve(null);
+                default:
+                  focusOn = true;
+                  details = `Windows Focus Assist: ON - Unknown state ${state} (WNF)`;
+                  modes = ['Focus Assist'];
+                  break;
+              }
+              
+              this.#log('#detectWindowsFocusStatus WNF success', { state, focusOn, details });
+              resolve({ focusOn, details, modes });
+            } catch (e) {
+              this.#log('#detectWindowsFocusStatus WNF parse error', String(e));
+              resolve(null);
+            }
+          });
+        } catch (e) {
+          // Clean up temp file on error
+          try { fs.unlinkSync(tempScriptPath); } catch {}
+          this.#log('#detectWindowsFocusStatus WNF file write error', String(e));
+          resolve(null);
+        }
+      });
+
+      if (wnfResult) {
+        return wnfResult;
+      }
+
+      // Method 2: Check registry for Focus Assist settings (fallback)
+      const registryResult = await new Promise(resolve => {
+        exec('reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\CloudStore\\Store\\Cache\\DefaultAccount\\$$windows.data.notifications$$$$windows.data.notifications\\Current" /v Data', (err, stdout) => {
+          if (err || !stdout) return resolve(null);
+          // Focus Assist registry exists, check if enabled
+          exec('reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\CloudStore\\Store\\Cache\\DefaultAccount\\$$windows.data.notifications$$$$windows.data.notifications\\Current" /v Data', (err2, stdout2) => {
+            if (err2 || !stdout2) return resolve(null);
+            // Try to determine if Focus Assist is enabled by checking for specific patterns
+            const data = stdout2.toLowerCase();
+            if (data.includes('focusassist') || data.includes('donotdisturb')) {
+              // Focus Assist is configured, assume it's enabled if we can't determine exact status
+              const details = 'Windows Focus Assist: ON (Registry detected)';
+              resolve({ focusOn: true, details, modes: ['Focus Assist'] });
+            } else {
+              resolve(null);
+            }
+          });
+        });
+      });
+
+      if (registryResult) {
+        return registryResult;
+      }
+
+      // Method 3: Check for Quiet Hours (older Windows versions)
+      const quietHoursResult = await new Promise(resolve => {
+        exec('reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings" /v NOC_GLOBAL_SETTING_ALLOW_NOTIFICATION_SOUND', (err, stdout) => {
+          if (err || !stdout) return resolve(null);
+          const match = stdout.match(/NOC_GLOBAL_SETTING_ALLOW_NOTIFICATION_SOUND\s+REG_DWORD\s+0x([0-9a-f]+)/i);
+          if (match) {
+            const val = parseInt(match[1], 16);
+            const focusOn = (val === 0); // 0 = notifications disabled (Quiet Hours ON)
+            const details = `Windows Quiet Hours: ${focusOn ? 'ON' : 'OFF'} (0x${match[1]})`;
+            resolve({ focusOn, details, modes: ['Quiet Hours'] });
+          } else {
+            resolve(null);
+          }
+        });
+      });
+
+      if (quietHoursResult) {
+        return quietHoursResult;
+      }
+
+      // Method 4: Check notification center settings (final fallback)
+      const notificationResult = await new Promise(resolve => {
+        exec('reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications" /v ToastEnabled', (err, stdout) => {
+          if (err || !stdout) return resolve(null);
+          const match = stdout.match(/ToastEnabled\s+REG_DWORD\s+0x([0-9a-f]+)/i);
+          if (match) {
+            const val = parseInt(match[1], 16);
+            const focusOn = (val === 0); // 0 = notifications disabled (Focus ON)
+            const details = `Windows Notifications: ${focusOn ? 'DISABLED' : 'ENABLED'} (ToastEnabled=0x${match[1]})`;
+            resolve({ focusOn, details, modes: ['Do Not Disturb'] });
+          } else {
+            resolve(null);
+          }
+        });
+      });
+
+      if (notificationResult) {
+        return notificationResult;
+      }
+
+      // No Focus Assist or DND detected
+      return null;
+    } catch (e) {
+      this.#log('#detectWindowsFocusStatus exception', String(e));
       return null;
     }
   }
