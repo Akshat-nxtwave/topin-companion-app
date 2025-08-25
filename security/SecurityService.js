@@ -799,31 +799,34 @@ class SecurityService extends EventEmitter {
         threats.push(...videoThreats);
       }
       
-      // Even without WebRTC activity, check for sharing tabs directly
-      this.log(`🔍 Checking for sharing tabs directly without WebRTC requirement...`);
-      for (const p of browserProcs) {
-        try {
-          const name = (p.name || '').toLowerCase();
-          const allSharingTabs = await this.getAllTabsForBrowser(name);
-          if (allSharingTabs.length > 0) {
-            this.log(`🎯 Found ${allSharingTabs.length} sharing tabs in ${p.name} without WebRTC`);
-            threats.push({
-              type: 'screen_sharing_tabs_detected',
-              severity: allSharingTabs.length > 1 ? 'high' : 'medium',
-              message: `${p.name} has ${allSharingTabs.length} tab${allSharingTabs.length > 1 ? 's' : ''} with screen sharing content`,
-              details: { 
-                pid: p.pid, 
-                name: p.name,
-                sharingTabs: allSharingTabs,
-                tabCount: allSharingTabs.length,
-                detectionMethod: 'direct_tab_scan'
-              }
-            });
+      // For non-Linux platforms, retain direct tab-based detection (unchanged behavior)
+      if (process.platform !== 'linux') {
+        this.log(`🔍 Checking for sharing tabs directly without WebRTC requirement (non-Linux)...`);
+        for (const p of browserProcs) {
+          try {
+            const name = (p.name || '').toLowerCase();
+            const allSharingTabs = await this.getAllTabsForBrowser(name);
+            if (allSharingTabs.length > 0) {
+              this.log(`🎯 Found ${allSharingTabs.length} sharing tabs in ${p.name} without WebRTC`);
+              threats.push({
+                type: 'screen_sharing_tabs_detected',
+                severity: allSharingTabs.length > 1 ? 'high' : 'medium',
+                message: `${p.name} has ${allSharingTabs.length} tab${allSharingTabs.length > 1 ? 's' : ''} with screen sharing content`,
+                details: { 
+                  pid: p.pid, 
+                  name: p.name,
+                  sharingTabs: allSharingTabs,
+                  tabCount: allSharingTabs.length,
+                  detectionMethod: 'direct_tab_scan'
+                }
+              });
+            }
+          } catch (e) {
+            this.logError(`❌ Direct tab check failed for ${p.name}:`, e);
           }
-        } catch (e) {
-          this.logError(`❌ Direct tab check failed for ${p.name}:`, e);
         }
       }
+      
 
       let activeScreencastPids = new Set();
       if (process.platform === 'linux') {
@@ -857,16 +860,44 @@ class SecurityService extends EventEmitter {
           }
         } catch {}
 
-        // Filter: Only keep WebRTC-only browser hints if there is an active screencast for that PID (Linux-only)
-        if (activeScreencastPids.size > 0) {
-          const browserPidSet = new Set(browserProcs.map(p => p.pid));
-          threats = threats.filter(t => {
-            if (t.type !== 'screen_sharing_process_webrtc') return true;
-            const pid = t.details && t.details.pid;
-            if (!pid) return true;
-            if (browserPidSet.has(pid) && !activeScreencastPids.has(pid)) return false;
-            return true;
-          });
+        // On Linux: require an active PipeWire screencast for browser-based sharing signals
+        const browserPidSet = new Set(browserProcs.map(p => p.pid));
+        threats = threats.filter(t => {
+          const pid = t.details && t.details.pid;
+          // Always keep non-browser or non-PID threats as-is
+          if (!pid || !browserPidSet.has(pid)) return true;
+          // Only allow browser WebRTC and tab-based sharing if PipeWire screencast is active
+          if (t.type === 'screen_sharing_process_webrtc' || t.type === 'screen_sharing_tabs_detected') {
+            return activeScreencastPids.has(pid);
+          }
+          return true;
+        });
+
+        // After PipeWire evidence, check for sharing tabs and only report when screencast is active
+        this.log(`🔍 Checking for sharing tabs gated by active PipeWire screencast...`);
+        for (const p of browserProcs) {
+          if (!activeScreencastPids.has(p.pid)) continue;
+          try {
+            const lowerName = (p.name || '').toLowerCase();
+            const allSharingTabs = await this.getAllTabsForBrowser(lowerName);
+            if (allSharingTabs.length > 0) {
+              this.log(`🎯 Found ${allSharingTabs.length} sharing tabs in ${p.name} (PipeWire active)`);
+              threats.push({
+                type: 'screen_sharing_tabs_detected',
+                severity: allSharingTabs.length > 1 ? 'high' : 'medium',
+                message: `${p.name} has ${allSharingTabs.length} tab${allSharingTabs.length > 1 ? 's' : ''} with screen sharing content`,
+                details: {
+                  pid: p.pid,
+                  name: p.name,
+                  sharingTabs: allSharingTabs,
+                  tabCount: allSharingTabs.length,
+                  detectionMethod: 'direct_tab_scan'
+                }
+              });
+            }
+          } catch (e) {
+            this.logError(`❌ Direct tab check failed for ${p.name}:`, e);
+          }
         }
       }
 
@@ -980,7 +1011,7 @@ class SecurityService extends EventEmitter {
         }
       }
       const now = Date.now();
-      const sticky = this.sharingStickyMs || 0;
+      const sticky = process.platform === 'linux' ? 0 : (this.sharingStickyMs || 0);
       this.log(`🔍 WebRTC detection found ${byPid.size} processes with UDP activity`);
       for (const [pid, count] of byPid) {
         const p = procByPid.get(pid);
