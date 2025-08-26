@@ -97,64 +97,48 @@ async function runSystemCheck(){
   scanBtn.classList.add('loading');
   scanBtn.setAttribute('aria-busy', 'true');
   scanBtn.textContent = 'Scanning…';
-  globalStatusEl.textContent = 'Step 1/2: Scanning for threats…';
-  globalHintEl.textContent = 'Running security checks for malicious software and activity';
+  globalStatusEl.textContent = 'Exam check: Validating running applications…';
+  globalHintEl.textContent = 'Only one browser and the companion app may be running';
   suspiciousListEl.innerHTML = '';
   try {
     // Refresh focus badge at scan start
     try { await setFocusStatus(); } catch {}
-    // Run both checks together in main for consistent results
-    const res = await window.companion.completeSystemCheck();
-    if (!res.ok) throw new Error(res.error || 'Scan failed');
-
-    // Step 1: Security scan (threats & malicious)
-    const report = res.security;
-    if (Array.isArray(report?.threats) && report.threats.length > 0) {
-      // Aggregate by application so we show one row per app
-      const processes = report.processes || [];
-      const agg = new Map();
-      for (const t of report.threats) {
-        const targetRaw = resolveThreatTarget(t, processes);
-        const target = String(targetRaw || '').trim();
-        if (!target) continue;
-        const key = target.toLowerCase();
-        const display = normalizeAppDisplay(target);
-        const rank = severityRank(t.severity);
-        const cur = agg.get(key) || { app: display, type: t.type, message: t.message || '', severity: t.severity, rank: rank, reasons: new Set() };
-        cur.reasons.add(t.message || t.type || '');
-        if (rank > (cur.rank || 0)) {
-          cur.type = t.type;
-          cur.message = t.message || cur.message;
-          cur.severity = t.severity;
-          cur.rank = rank;
-        }
-        agg.set(key, cur);
-      }
-      const rows = Array.from(agg.values()).slice(0, 50).map(item => {
-        const reasons = Array.from(item.reasons).filter(Boolean);
-        const reasonText = reasons.length > 1 ? `${item.message} (+${reasons.length - 1} more)` : (item.message || '');
-        return `<tr><td>${item.type}</td><td>${reasonText}</td><td>${item.app}</td></tr>`;
-      }).join('');
-      const table = `
+    // Exam mode check first: allow only 1 browser + companion app
+    try {
+      const exam = await window.companion.runExamModeCheck();
+      if (exam && exam.ok) {
+        const flagged = Array.isArray(exam.flagged) ? exam.flagged : [];
+        const multi = !!exam.summary?.multipleBrowsersActive;
+        if (multi || flagged.length > 0) {
+          const browserWarning = multi ? `<div class="muted" style="margin:6px 0 10px">Multiple browsers active: ${
+            Array.isArray(exam.summary.activeBrowsers) ? exam.summary.activeBrowsers.join(', ') : ''
+          }. Allowed: ${exam.summary.allowedBrowserFamily || 'auto-selected'}. Please keep only one browser open.</div>` : '';
+          const rows = flagged.slice(0, 100).map(p => {
+            const cpu = (Number(p.cpu) || 0).toFixed(1);
+            const mem = (Number(p.mem) || 0).toFixed(1);
+            return `<tr><td>${p.name}</td><td>${p.pid}</td><td>${cpu}%</td><td>${mem}%</td></tr>`;
+          }).join('');
+          const table = `
 <table class="table">
-  <thead><tr><th>Type</th><th>Message</th><th>Application</th></tr></thead>
-  <tbody>${rows}</tbody>
+  <thead><tr><th>Application</th><th>PID</th><th>CPU</th><th>MEM</th></tr></thead>
+  <tbody>${rows || '<tr><td colspan="4" class="muted">No additional apps flagged</td></tr>'}</tbody>
 </table>`;
-      suspiciousListEl.innerHTML = table;
-      globalStatusEl.textContent = 'Action required: Threats detected';
-      globalHintEl.textContent = 'Please stop/terminate the listed processes or close apps, then re-run the check.';
-      return;
-    }
-
-    // Step 2: Notifications
-    globalStatusEl.textContent = 'Step 2/2: Checking notifications…';
+          suspiciousListEl.innerHTML = table;
+          notifAuditEl.innerHTML = browserWarning;
+          globalStatusEl.textContent = 'Action required: Close disallowed applications';
+          globalHintEl.textContent = 'During the exam, only one browser and this companion app may run.';
+          return;
+        }
+      }
+    } catch {}
+    // Continue with Notification audit only if exam check passes
+    globalStatusEl.textContent = 'Checking notifications…';
     globalHintEl.textContent = 'Verifying system/browser notification settings';
-
-    const audit = res.notifications;
+    const audit = await window.companion.auditNotifications();
     if (audit) {
       const sys = audit.system;
       const browsers = audit.browsers || [];
-      const procs = audit.threats?.length ? (audit.processes || []) : (audit.processes || []); // keep as-is
+      const procs = audit.threats?.length ? (audit.processes || []) : (audit.processes || []);
 
       const anyNeedsDisable = (browsers || []).some(b => (b.profiles || []).some(p => p.status !== 'disabled'));
       const anyProc = procs.length > 0;
@@ -201,7 +185,7 @@ async function runSystemCheck(){
         notifAuditEl.innerHTML = '';
       }
 
-      if (anyNeedsDisable || anyProc) {
+      if ((audit.threats && audit.threats.length) || anyNeedsDisable || anyProc) {
         globalStatusEl.textContent = 'Action required: Notifications are ON';
         globalHintEl.innerHTML = 'Please disable notifications in your browser/apps, then re-run the check.';
         return;

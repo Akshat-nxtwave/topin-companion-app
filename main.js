@@ -11,6 +11,7 @@ const si = require('systeminformation');
 const fs = require('fs');
 const { exec } = require('child_process');
 const SecurityService = require('./security/SecurityService');
+const ExamModeService = require('./security/ExamModeService');
 const NotificationService = require('./security/NotificationService');
 const { EventBus } = require('./comm/EventBus');
 const { LocalServer } = require('./comm/LocalServer');
@@ -26,6 +27,7 @@ const TopinEvents = Object.freeze({
   SYSTEM_CHECK_SUCCESSFUL: 'SYSTEM_CHECK_SUCCESSFUL'
 });
 const securityService = new SecurityService();
+const examModeService = new ExamModeService();
 const notificationService = new NotificationService();
 
 // Initialize EventBus and WebSocket server for communication
@@ -651,7 +653,8 @@ ipcMain.handle('app:auditNotifications', async (_evt, _providedScanId) => {
       }
     }
     
-    return { ok: true, ...audit };
+    // Include threats in return payload for renderer consumption
+    return { ok: true, threats: notificationThreats, ...audit };
   } catch (e) {
     return { ok: false, error: String(e) };
   }
@@ -1448,6 +1451,24 @@ ipcMain.handle('app:listActiveSharingTabs', async () => {
   try {
     const tabs = await securityService.getActiveScreenSharingTabs();
     return { ok: true, tabs };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// Exam mode: allow only one browser family and the companion app; flag the rest
+ipcMain.handle('app:runExamModeCheck', async (_evt, options) => {
+  try {
+    const pkg = require('./package.json');
+    const appName = String(pkg.name || '').toLowerCase();
+    const exeBase = (process.execPath || '').split(/[\\/]/).pop().toLowerCase();
+    const defaults = {
+      allowedCompanionMatches: [appName, 'electron', 'companion', 'topin', exeBase].filter(Boolean),
+      preferredBrowserFamily: null
+    };
+    const opts = Object.assign({}, defaults, options || {});
+    const res = await examModeService.runExamModeChecks(opts);
+    return res;
   } catch (e) {
     return { ok: false, error: String(e) };
   }
