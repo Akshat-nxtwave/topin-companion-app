@@ -56,6 +56,24 @@ function debugClientStatus() {
 // Function to analyze notification threats from audit result (similar to stepped scan)
 function analyzeNotificationThreatsFromAudit(auditResult) {
   const threats = [];
+  // Linux: Only enforce Do Not Disturb (DND/Focus) requirement. Do not inspect apps/browsers further.
+  if (process.platform === 'linux') {
+    const sys = auditResult.system || {};
+    const status = String(sys.status || '').toLowerCase();
+    const dndOn = (status === 'disabled'); // our convention: notifications disabled => DND ON
+    if (!dndOn) {
+      threats.push({
+        type: 'linux_dnd_required',
+        severity: 'high',
+        message: 'Turn on Do Not Disturb (DND) in system settings',
+        action: 'Open notification settings and enable DND',
+        userActionRequired: true,
+        settingsRequired: true,
+        details: { platform: 'linux', system: sys }
+      });
+    }
+    return threats;
+  }
   
   // EXCLUDE system notifications from threat analysis as per user requirement
   // System notifications are not considered threats

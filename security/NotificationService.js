@@ -147,6 +147,10 @@ class NotificationService {
       })
       .map(p => ({ ...p, notifEnabled: true }));
 
+    // Linux flow override: only enforce DND; do not report apps/browsers
+    if (process.platform === 'linux') {
+      return { system, browsers: [], processes: [] };
+    }
     return { system, browsers, processes: filteredProcesses };
   }
 
