@@ -98,6 +98,20 @@ class NotificationService {
   }
 
   async auditNotifications() {
+    // macOS: Replace notification check with (1) Full Disk Access permission prompt, (2) Focus (DND) state check via Assertions.json
+    if (process.platform === 'darwin') {
+      const mac = await this.#checkMacAssertionsPermissionAndFocus(true);
+      // Map to legacy "system" shape for compatibility
+      const system = {
+        platform: 'darwin',
+        status: mac.focusOn ? 'disabled' : 'enabled',
+        details: mac.details || (mac.permissionGranted ? 'Focus via Assertions.json' : 'Full Disk Access required for Assertions.json')
+      };
+      // For macOS, we no longer report browsers/processes here – gating is based solely on DND focus state
+      return { system, mac, browsers: [], processes: [] };
+    }
+
+    // Non-macOS: keep existing behavior
     const [system, browsers, processes] = await Promise.all([
       this.#detectSystemNotificationSetting(),
       this.#detectBrowserNotificationSettings(),
@@ -293,6 +307,74 @@ class NotificationService {
     } catch {
       this.#log('#detectMacFocusViaDb exception');
       return null;
+    }
+  }
+
+  async #checkMacAssertionsPermissionAndFocus(openSettingsIfDenied = false) {
+    try {
+      const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
+      const assertionsPath = path.join(home, 'Library', 'DoNotDisturb', 'DB', 'Assertions.json');
+      const cmd = `/usr/bin/plutil -convert json -o - "${assertionsPath}"`;
+      return await new Promise(resolve => {
+        exec(cmd, { timeout: 2000 }, async (err, stdout, stderr) => {
+          if (err || !stdout) {
+            const out = (stderr || '').toLowerCase() + ' ' + ((stdout || '').toLowerCase());
+            const msg = String(err ? (err.message || err) : (stderr || 'unknown error'));
+            const opNotPermitted = out.includes('operation not permitted') || out.includes('not permitted') || out.includes('eperm');
+            const noFile = out.includes('no such file') || out.includes('no such');
+            this.#log('#checkMacAssertionsPermissionAndFocus error', { msg, opNotPermitted, noFile });
+            if (opNotPermitted) {
+              let settingsOpened = false;
+              if (openSettingsIfDenied) {
+                try {
+                  const { shell } = require('electron');
+                  // Try Full Disk Access page
+                  const urls = [
+                    'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
+                    'x-apple.systempreferences:com.apple.preference.security?Privacy_FullDiskAccess'
+                  ];
+                  for (const u of urls) { try { await shell.openExternal(u); settingsOpened = true; break; } catch {} }
+                } catch {}
+              }
+              return resolve({ permissionGranted: false, focusOn: false, details: 'Full Disk Access required for Assertions.json', modes: [], settingsOpened });
+            }
+            // Fallback: try DB.json only if error wasn't permission-related
+            try {
+              const viaDb = await this.#detectMacFocusViaDb();
+              if (viaDb) {
+                return resolve({ permissionGranted: true, focusOn: !!viaDb.focusOn, details: viaDb.details || 'DB.json', modes: viaDb.modes || [] });
+              }
+            } catch {}
+            return resolve({ permissionGranted: !opNotPermitted, focusOn: false, details: 'Unable to read Assertions.json', modes: [] });
+          }
+          try {
+            const data = JSON.parse(stdout);
+            const entries = Array.isArray(data?.data) ? data.data : [];
+            const first = entries.length ? entries[0] : null;
+            const records = Array.isArray(first?.storeAssertionRecords) ? first.storeAssertionRecords : [];
+            const last = records.length ? records[records.length - 1] : null;
+            const modeIdentifier = last?.assertionDetails?.assertionDetailsModeIdentifier;
+            const idLower = String(modeIdentifier || '').toLowerCase();
+            const isDndDefault = modeIdentifier === 'com.apple.donotdisturb.mode.default';
+            let mode = '';
+            if (idLower.includes('donotdisturb')) mode = 'Do Not Disturb';
+            else if (idLower.includes('work')) mode = 'Work';
+            else if (idLower.includes('personal')) mode = 'Personal';
+            else if (idLower.includes('sleep')) mode = 'Sleep';
+            if (!modeIdentifier) {
+              return resolve({ permissionGranted: true, focusOn: false, details: 'Focus=OFF (Assertions.json)', modes: [] });
+            }
+            const details = `Focus=${isDndDefault ? 'ON' : 'OFF'} (Assertions.json) mode=${modeIdentifier}`;
+            return resolve({ permissionGranted: true, focusOn: isDndDefault, details, modes: mode ? [mode] : [modeIdentifier] });
+          } catch (e) {
+            this.#log('#checkMacAssertionsPermissionAndFocus parse error', String(e));
+            return resolve({ permissionGranted: true, focusOn: false, details: 'Assertions.json parse error', modes: [] });
+          }
+        });
+      });
+    } catch (e) {
+      this.#log('#checkMacAssertionsPermissionAndFocus exception', String(e));
+      return { permissionGranted: false, focusOn: false, details: 'exception', modes: [] };
     }
   }
 
