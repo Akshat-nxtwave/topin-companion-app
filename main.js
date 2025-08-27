@@ -75,6 +75,39 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
     return threats;
   }
   
+  // macOS-only replacement flow: require Full Disk Access and DND (Focus) ON
+  try {
+    const isMac = (auditResult && auditResult.system && auditResult.system.platform === 'darwin') || process.platform === 'darwin' || !!auditResult.mac;
+    if (isMac) {
+      const mac = auditResult.mac || {};
+      const permissionGranted = !!mac.permissionGranted;
+      const focusOn = !!mac.focusOn; // true only when Do Not Disturb (default) is ON
+      
+      if (!permissionGranted) {
+        threats.push({
+          type: 'mac_full_disk_access_required',
+          severity: 'high',
+          message: 'Grant Full Disk Access to the companion app to verify Focus (DND) state',
+          action: 'Open System Settings > Privacy & Security > Full Disk Access, add and enable this app',
+          userActionRequired: true,
+          settingsRequired: true,
+          details: mac.details || 'Assertions.json not readable'
+        });
+      } else if (!focusOn) {
+        threats.push({
+          type: 'mac_focus_mode_disabled',
+          severity: 'high',
+          message: 'Enable Do Not Disturb (Focus) mode to proceed',
+          action: 'Enable Do Not Disturb from Control Center or System Settings > Focus',
+          userActionRequired: true,
+          settingsRequired: true,
+          details: mac.details || 'Focus=OFF'
+        });
+      }
+      return threats;
+    }
+  } catch {}
+  
   // EXCLUDE system notifications from threat analysis as per user requirement
   // System notifications are not considered threats
   const systemProcessNameExclusions = new Set(['win32', 'darwin']);
