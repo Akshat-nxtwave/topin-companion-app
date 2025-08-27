@@ -1688,11 +1688,23 @@ class SecurityService extends EventEmitter {
       const [system, processes] = await Promise.all([si.system(), si.processes()]);
       const manufacturer = (system.manufacturer || '').toLowerCase();
       const model = (system.model || '').toLowerCase();
-      const vmIndicators = ['vmware','virtualbox','qemu','kvm','hyper-v','xen','parallels'];
+      const vmIndicators = ['vmware','virtualbox','qemu','kvm','hyper-v','hyperv','xen','parallels'];
+      const vmProcIndicators = [
+        'virtualbox','virtualboxvm','vbox','vboxheadless','vboxsvc','vboxclient','vboxmanage',
+        'vmware','parallels','qemu','kvm','hyper-v','hyperv','xen'
+      ];
       for (const ind of vmIndicators) if (manufacturer.includes(ind) || model.includes(ind)) threats.push({ type: 'virtual_machine_detected', severity: 'critical', message: `VM detected: ${manufacturer} ${model}` });
       for (const p of (processes.list || [])) {
         const name = (p.name || '').toLowerCase();
-        if (vmIndicators.some(ind => name.includes(ind))) threats.push({ type: 'vm_process_detected', severity: 'high', message: `VM process detected: ${p.name}` });
+        const cmd = (p.command || '').toLowerCase();
+        if (vmProcIndicators.some(ind => name.includes(ind) || cmd.includes(ind))) {
+          threats.push({
+            type: 'vm_process_detected',
+            severity: 'high',
+            message: `VM process detected: ${p.name}`,
+            details: { pid: p.pid, name: p.name || 'unknown', command: p.command || '' }
+          });
+        }
       }
     } catch {}
     return threats;
