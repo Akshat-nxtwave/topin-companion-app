@@ -1467,6 +1467,45 @@ ipcMain.handle('app:runExamModeCheck', async (_evt, options) => {
       preferredBrowserFamily: null
     };
     const opts = Object.assign({}, defaults, options || {});
+    // On Linux, route to SecurityService for threat/malicious detection instead of ExamModeService
+    if (process.platform === 'linux') {
+      const [systemReport, threats] = await Promise.all([
+        scanSystem().catch(() => ({ processes: [], platform: 'linux', load: 0 })),
+        securityService.runAllChecks({
+          processNames: maliciousSignatures.processNames,
+          ports: maliciousSignatures.ports.map(p => Number(p)),
+          domains: maliciousSignatures.domains
+        }).catch(() => [])
+      ]);
+      const byPid = new Map((systemReport.processes || []).map(p => [p.pid, p]));
+      const flagged = [];
+      for (const t of (threats || [])) {
+        const pid = (t && t.details && t.details.pid) ? Number(t.details.pid) : (t && t.pid ? Number(t.pid) : 0);
+        const proc = pid && byPid.get(pid);
+        const name = (t && t.details && t.details.name) || t.name || (proc && proc.name) || 'unknown';
+        const cpu = proc ? (Number(proc.cpu) || 0) : 0;
+        const mem = proc ? (Number(proc.mem) || 0) : 0;
+        const command = proc ? (proc.command || '') : '';
+        flagged.push({ pid: pid || 0, name, cpu, mem, command });
+      }
+      return {
+        ok: true,
+        summary: {
+          totalProcesses: (systemReport.processes || []).length,
+          nonSystemProcesses: 0,
+          flaggedCount: flagged.length,
+          activeBrowsers: [],
+          allowedBrowserFamily: null,
+          multipleBrowsersActive: false
+        },
+        flagged,
+        allowed: {
+          browserFamily: null,
+          companionMatches: opts.allowedCompanionMatches
+        },
+        linuxActiveWindows: []
+      };
+    }
     const res = await examModeService.runExamModeChecks(opts);
     return res;
   } catch (e) {

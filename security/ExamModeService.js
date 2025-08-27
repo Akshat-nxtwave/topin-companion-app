@@ -98,6 +98,72 @@ class ExamModeService {
     return patterns.some(r => r.test(n));
   }
 
+  async getActiveLinuxWindowApplications() {
+    if (process.platform !== 'linux') return [];
+    try {
+      // Require wmctrl for reliable window enumeration
+      const which = await this.execCmd('command -v wmctrl || true', 800);
+      if (!which.stdout || !which.stdout.trim()) return [];
+
+      // Use both PID (-p) and WM_CLASS (-x)
+      const res = await this.execCmd('wmctrl -lp -x 2>/dev/null || true', 2000);
+      const lines = (res.stdout || '').split(/\r?\n/).filter(Boolean);
+      if (!lines.length) return [];
+
+      // Parse wmctrl lines: winId desktop pid host wm_class title...
+      const byPid = new Map();
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 5) continue;
+        // Some wmctrl builds shift columns; try robust PID extraction
+        let pid = 0;
+        // Common: [0]=winId [1]=desk [2]=pid [3]=host [4]=wm_class [5..]=title
+        pid = Number(parts[2]) || Number(parts[3]) || 0;
+        if (!pid) continue;
+        const wmClass = String(parts[4] || '').toLowerCase();
+        const title = parts.slice(5).join(' ').trim();
+        if (!byPid.has(pid)) {
+          byPid.set(pid, { pid, wmClass, titles: new Set() });
+        }
+        const rec = byPid.get(pid);
+        if (wmClass && !rec.wmClass) rec.wmClass = wmClass;
+        if (title) rec.titles.add(title);
+      }
+
+      if (byPid.size === 0) return [];
+
+      // Join with process list to enrich with name/command
+      const processesRes = await this.safe('processes', () => si.processes(), 3000);
+      const list = (processesRes && processesRes.list) ? processesRes.list : [];
+      const procByPid = new Map();
+      for (const p of list) procByPid.set(p.pid, p);
+
+      const result = [];
+      for (const [pid, rec] of byPid) {
+        const proc = procByPid.get(pid);
+        const name = proc && proc.name ? String(proc.name) : '';
+        const command = proc && proc.command ? String(proc.command) : '';
+        result.push({
+          pid,
+          name,
+          command,
+          wmClass: rec.wmClass || '',
+          titles: Array.from(rec.titles).slice(0, 5)
+        });
+      }
+
+      // Sort by process name then title for stability
+      result.sort((a, b) => {
+        const an = String(a.name || '').toLowerCase();
+        const bn = String(b.name || '').toLowerCase();
+        if (an < bn) return -1; if (an > bn) return 1; return a.pid - b.pid;
+      });
+      return result;
+    } catch {
+      return [];
+    }
+  }
+
   async collectLinuxGuiPids() {
     const gui = new Set();
     try {
@@ -121,6 +187,34 @@ class ExamModeService {
       const x11 = await this.execCmd('lsof -t -U /tmp/.X11-unix/* 2>/dev/null || true', 800);
       if (x11.ok && x11.stdout) {
         for (const p of x11.stdout.split(/\s+/)) { const pid = Number(p) || 0; if (pid) gui.add(pid); }
+      }
+      // Fallback via xprop: enumerate windows and map to _NET_WM_PID
+      if (gui.size === 0) {
+        const haveXprop = await this.execCmd('command -v xprop || true', 600);
+        if (haveXprop.ok && haveXprop.stdout && haveXprop.stdout.trim()) {
+          const root = await this.execCmd('xprop -root _NET_CLIENT_LIST 2>/dev/null || true', 1200);
+          if (root.ok && root.stdout) {
+            const ids = (root.stdout.match(/0x[0-9a-fA-F]+/g) || []).slice(0, 100);
+            for (const id of ids) {
+              const pr = await this.execCmd(`xprop -id ${id} _NET_WM_PID -notype 2>/dev/null || true`, 400);
+              if (pr.ok && pr.stdout) {
+                const m = pr.stdout.match(/\b(\d+)\b/);
+                const pid = m ? Number(m[1]) : 0;
+                if (pid) gui.add(pid);
+              }
+              if (gui.size >= 200) break;
+            }
+          }
+        }
+      }
+      // Enrich with environment-based GUI detection for current-user processes
+      const processesRes = await this.safe('processes', () => si.processes(), 2500);
+      const list = (processesRes && processesRes.list) ? processesRes.list : [];
+      const current = (os.userInfo && os.userInfo().username) ? String(os.userInfo().username) : '';
+      for (const p of list) {
+        const sameUser = current && String(p.user || '') === current;
+        if (!sameUser) continue;
+        if (this.hasGuiEnvForPid(p.pid)) gui.add(p.pid);
       }
     } catch {}
     return gui;
@@ -146,24 +240,154 @@ class ExamModeService {
       const fs = require('fs');
       const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
       // https://man7.org/linux/man-pages/man5/proc.5.html
-      // Field 7 is tty_nr (1-based), index 6 in split array
-      const parts = stat.split(' ');
-      const ttyNr = Number(parts[6] || 0);
-      return { ttyNr };
+      // Proper parsing to extract ppid and tty_nr even when comm contains spaces
+      const lp = stat.indexOf('(');
+      const rp = stat.lastIndexOf(')');
+      let after = '';
+      if (lp !== -1 && rp !== -1 && rp > lp) {
+        after = stat.slice(rp + 1).trim();
+      } else {
+        after = stat.trim();
+      }
+      const fields = after.split(/\s+/);
+      // fields: state ppid pgrp session tty_nr ...
+      const ppid = Number(fields[1] || 0);
+      const ttyNr = Number(fields[4] || 0);
+      return { ppid, ttyNr };
     } catch { return null; }
+  }
+
+  readProcCmdline(pid) {
+    try {
+      const fs = require('fs');
+      const buf = fs.readFileSync(`/proc/${pid}/cmdline`);
+      const raw = buf.toString('utf8');
+      return raw.split('\0').filter(Boolean).join(' ').trim();
+    } catch { return ''; }
+  }
+
+  readProcEnviron(pid) {
+    try {
+      const fs = require('fs');
+      const buf = fs.readFileSync(`/proc/${pid}/environ`);
+      const raw = buf.toString('utf8');
+      const env = {};
+      for (const kv of raw.split('\0')) {
+        if (!kv) continue;
+        const idx = kv.indexOf('=');
+        if (idx > 0) {
+          const key = kv.slice(0, idx);
+          const val = kv.slice(idx + 1);
+          env[key] = val;
+        }
+      }
+      return env;
+    } catch { return null; }
+  }
+
+  hasGuiEnvForPid(pid) {
+    if (process.platform !== 'linux') return false;
+    try {
+      const env = this.readProcEnviron(pid);
+      if (!env) return false;
+      const display = String(env.DISPLAY || '').trim();
+      const waylandDisplay = String(env.WAYLAND_DISPLAY || '').trim();
+      const sessionType = String(env.XDG_SESSION_TYPE || '').trim().toLowerCase();
+      const desktopSession = String(env.DESKTOP_SESSION || env.GDMSESSION || '').trim();
+      const kde = String(env.KDE_FULL_SESSION || '').trim();
+      const gnome = String(env.GNOME_DESKTOP_SESSION_ID || '').trim();
+      if (display) return true; // X11
+      if (waylandDisplay) return true; // Wayland
+      if (sessionType === 'wayland' || sessionType === 'x11') return true;
+      if (desktopSession || kde || gnome) return true; // inside a desktop session
+      return false;
+    } catch { return false; }
+  }
+
+  readProcStatusUid(pid) {
+    try {
+      const fs = require('fs');
+      const data = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+      const lines = data.split(/\r?\n/);
+      for (const line of lines) {
+        if (line.startsWith('Uid:')) {
+          const parts = line.split(/\s+/).filter(Boolean);
+          const real = Number(parts[1] || 0);
+          return Number.isFinite(real) ? real : null;
+        }
+      }
+      return null;
+    } catch { return null; }
+  }
+
+  readProcExePath(pid) {
+    try {
+      const fs = require('fs');
+      const exe = fs.readlinkSync(`/proc/${pid}/exe`);
+      return String(exe || '');
+    } catch { return ''; }
+  }
+
+  getExecutablePathForPidLinux(p) {
+    try {
+      const firstToken = String(p.command || '').split(/\s+/)[0] || '';
+      if (firstToken.startsWith('/')) return firstToken;
+      const exe = this.readProcExePath(p.pid);
+      return exe || firstToken || '';
+    } catch { return ''; }
+  }
+
+  getPathBase(p) {
+    try { return path.basename(String(p || '')); } catch { return String(p || ''); }
+  }
+
+  isChromiumHelperProcess(command) {
+    const c = String(command || '').toLowerCase();
+    if (!/--type=/.test(c)) return false;
+    return !/--type=browser/.test(c);
+  }
+
+  isCrashpadProcess(name, command) {
+    const n = String(name || '').toLowerCase();
+    const c = String(command || '').toLowerCase();
+    return n.includes('crashpad') || c.includes('crashpad_handler') || c.includes('crashpad');
+  }
+
+  isLinuxDevToolProcess(name, command, execPath) {
+    const n = String(name || '').toLowerCase();
+    const c = String(command || '').toLowerCase();
+    const e = String(execPath || '').toLowerCase();
+    const base = this.getPathBase(e || this.getPathBase(String(c).split(/\s+/)[0] || ''));
+    const deny = [
+      'node','nodejs','npm','npx','pnpm','yarn','tsserver','pyright-langserver','gopls','java','jdtls','watchman','webpack','vite','parcel','eslint','prettier','bash','sh','zsh','fish','tmux'
+    ];
+    if (deny.includes(n) || deny.includes(base)) return true;
+    if (/\b(tsserver|node|npm|npx|pnpm|yarn|watchman|webpack|vite|parcel|eslint|prettier)\b/.test(c)) return true;
+    // Common language servers/tooling
+    if (/langserver|language-server|lsp-/.test(c)) return true;
+    return false;
   }
 
   async isLikelyUserStartedLinux(p) {
     const u = String(p.user || '').trim();
     const current = (os.userInfo && os.userInfo().username) ? String(os.userInfo().username) : '';
-    if (!u || !current || u !== current) return false;
+    let sameUser = (!!u && !!current && u === current);
+    if (!sameUser) {
+      const currUid = (process.getuid && typeof process.getuid === 'function') ? process.getuid() : null;
+      const pidUid = this.readProcStatusUid(p.pid);
+      if (currUid !== null && pidUid !== null && currUid === pidUid) sameUser = true;
+    }
+    if (!sameUser) return false;
     const stat = this.readProcStat(p.pid);
     const hasTty = !!(stat && stat.ttyNr && stat.ttyNr !== 0);
+    const parentNotSystemd = !!(stat && stat.ppid && stat.ppid !== 1);
     const cg = await this.readProcCgroup(p.pid);
     const inAppScope = !!(cg && cg.inAppScope);
     const inUserSlice = !!(cg && cg.userSlice);
-    // Consider user-started if it has a TTY, or lives in a user app scope/slice (GNOME/KDE app launch)
-    return hasTty || inAppScope || inUserSlice;
+    const hasGuiEnv = this.hasGuiEnvForPid(p.pid);
+    // Consider user-started if it has a TTY, or was not spawned by systemd (PPID != 1),
+    // or lives in a user app scope/slice (GNOME/KDE app launch), or GUI env detected.
+    return hasTty || parentNotSystemd || inAppScope || inUserSlice || hasGuiEnv;
   }
 
   async collectWindowsMainAppPids() {
@@ -337,6 +561,27 @@ class ExamModeService {
       const isLinux = process.platform === 'linux';
       const isWindows = process.platform === 'win32';
       const isMac = process.platform === 'darwin';
+
+      // Linux: application detection is handled by SecurityService.js. Do not detect here.
+      if (isLinux) {
+        return {
+          ok: true,
+          summary: {
+            totalProcesses: list.length,
+            nonSystemProcesses: 0,
+            flaggedCount: 0,
+            activeBrowsers: [],
+            allowedBrowserFamily: null,
+            multipleBrowsersActive: false
+          },
+          flagged: [],
+          allowed: {
+            browserFamily: null,
+            companionMatches: opts.allowedCompanionMatches
+          },
+          linuxActiveWindows: []
+        };
+      }
       let guiPidSet = new Set();
       if (isLinux) {
         guiPidSet = await this.collectLinuxGuiPids();
@@ -407,11 +652,6 @@ class ExamModeService {
       for (const p of all) {
         const n = String(p.name || '').toLowerCase();
         const c = String(p.command || '').toLowerCase();
-        // Linux: Only consider likely user-started processes (same user and has TTY or app scope)
-        if (isLinux) {
-          const likelyUser = await this.isLikelyUserStartedLinux(p);
-          if (!likelyUser) continue;
-        }
         // Windows: Only consider processes with visible main window in current session
         // Apply gating only when we have a non-empty set; otherwise avoid over-filtering
         if (isWindows) {
@@ -432,21 +672,37 @@ class ExamModeService {
         if (this.isBackgroundService(n, c)) continue;
         if (isKernelThreadLinux(n)) continue;
         if (isSystemName(n)) continue;
-        // cgroup: exclude system.slice, prefer user.slice; keep flatpak/snap as user apps
+        
         if (isLinux) {
+          // Require presence + session + acceptable location
+          const likelyUser = await this.isLikelyUserStartedLinux(p);
+          if (!likelyUser) continue;
+          const isGui = guiPidSet.has(p.pid) || this.hasGuiEnvForPid(p.pid);
+          const hasTty = (() => { const st = this.readProcStat(p.pid); return !!(st && st.ttyNr && st.ttyNr !== 0); })();
+          if (!(isGui || hasTty)) continue;
+          const execPath = this.getExecutablePathForPidLinux(p).toLowerCase();
           const cg = await this.readProcCgroup(p.pid);
-          if (cg && cg.systemSlice && !(cg.isFlatpak || cg.isSnap)) continue;
+          const isUserAppPath = execPath.includes('/opt/') || execPath.includes('/home/') || execPath.includes('/snap/') || execPath.includes('appimage') || execPath.includes('/.var/app/') || execPath.includes('/usr/bin/');
+          const isExecOk = isUserAppPath || (cg && (cg.isFlatpak || cg.isSnap));
+          if (!isExecOk) continue;
+          // Exclude developer tools and terminals/shells
+          if (this.isLinuxDevToolProcess(p.name, p.command, execPath)) continue;
+          // Exclude Chromium/Electron helpers and crashpad
+          if (this.isChromiumHelperProcess(p.command)) continue;
+          if (this.isCrashpadProcess(p.name, p.command)) continue;
+          nonSystem.push({ ...p, command: execPath || p.command });
+          continue;
         }
+
+        // Non-Linux platforms keep prior heuristics
         const fam = browserFamily(p.name, p.command);
         const isBrowserMain = fam ? (fam === 'firefox' ? true : this.isChromiumMainProcess(p.command)) : false;
-        const isGui = isLinux ? guiPidSet.has(p.pid) : true;
+        const isGui = true;
         const isUserAppPath = c.includes('/opt/') || c.includes('/home/') || c.includes('/snap/') || c.includes('appimage');
-        // Allow override: browsers and companion are considered user apps
         if (fam || isCompanion(n, c) || isGui || isUserAppPath) {
           nonSystem.push(p);
           continue;
         }
-        // Finally, drop processes clearly under system paths
         if (isSystemPath(c)) continue;
         nonSystem.push(p);
       }
@@ -490,6 +746,12 @@ class ExamModeService {
 
       flagged.sort((a, b) => (b.cpu || 0) - (a.cpu || 0));
 
+      // Linux: include active window applications (by wmctrl) for visibility
+      let linuxActiveWindows = [];
+      if (isLinux) {
+        linuxActiveWindows = await this.getActiveLinuxWindowApplications();
+      }
+
       return {
         ok: true,
         summary: {
@@ -504,7 +766,8 @@ class ExamModeService {
         allowed: {
           browserFamily: allowedBrowserFamily,
           companionMatches: opts.allowedCompanionMatches
-        }
+        },
+        linuxActiveWindows
       };
     } catch (e) {
       return { ok: false, error: String(e) };
