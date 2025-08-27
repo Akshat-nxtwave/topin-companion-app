@@ -6,11 +6,15 @@ const { exec } = require('child_process');
 class ExamModeService {
   constructor() {
     this.enableLog = true;
+    // Domains used to detect screen-sharing related tabs
+    this.screenSharingDomains = [
+      'meet.google.com','teams.microsoft.com','zoom.us','webex.com','gotomeeting.com','discord.com','slack.com','whereby.com','jitsi.org','appear.in','skype.com','teamviewer.com'
+    ];
   }
 
   log(message, ...args) {
     if (this.enableLog) {
-      // console.log(message, ...args);
+      console.log(message, ...args);
     }
   }
 
@@ -164,22 +168,119 @@ class ExamModeService {
 
   async collectWindowsMainAppPids() {
     // Use PowerShell to enumerate processes with visible main windows in current session
+    // Primary signal: visible window title in current session; plus known name + handle for Edge/Copilot
     try {
       const ps = [
         "$cs=(Get-Process -Id $PID).SessionId",
-        "$sys=@('explorer','svchost','winlogon','dwm','SearchUI','ShellExperienceHost','System','Idle','taskhostw','RuntimeBroker')",
-        "$all=Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.SessionId -eq $cs }",
-        "$user=$all | Where-Object { $_.MainWindowTitle -ne '' -and $_.Path -and $_.Path -notlike 'C:\\Windows\\*' -and $sys -notcontains $_.ProcessName }",
-        "$user | Select-Object -ExpandProperty Id"
+        // Title-visible windows in current session
+        "$title=Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $cs -and $_.MainWindowTitle -ne '' } | Select-Object -ExpandProperty Id",
+        // Known user apps (Edge/Copilot) when they have a window handle even if title is empty
+        "$known=Get-Process -Name msedge,msedgewebview2,microsoftedge,Copilot,CopilotApp -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $cs -and $_.MainWindowHandle -ne 0 } | Select-Object -ExpandProperty Id",
+        "$title + $known"
       ].join('; ');
       const cmd = `powershell -NoProfile -ExecutionPolicy Bypass -Command "${ps.replace(/"/g, '\\"')}"`;
-      const res = await this.execCmd(cmd, 2000);
+      const res = await this.execCmd(cmd, 6000);
       const set = new Set();
       if (res.ok && res.stdout) {
         for (const line of res.stdout.split(/\r?\n/)) {
           const pid = Number(String(line).trim());
           if (pid) set.add(pid);
         }
+      }
+      // Targeted fallback for Edge if nothing found
+      if (set.size === 0) {
+        const edgePs = "Get-Process -Name msedge,msedgewebview2 -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -ExpandProperty Id";
+        const edgeCmd = `powershell -NoProfile -ExecutionPolicy Bypass -Command "${edgePs.replace(/"/g, '\\"')}"`;
+        const edgeRes = await this.execCmd(edgeCmd, 4000);
+        if (edgeRes.ok && edgeRes.stdout) {
+          for (const line of edgeRes.stdout.split(/\r?\n/)) {
+            const pid = Number(String(line).trim());
+            if (pid) set.add(pid);
+          }
+        }
+      }
+      return set;
+    } catch {
+      return new Set();
+    }
+  }
+
+  expandWindowsUserAppPidsFromProcesses(list) {
+    try {
+      const set = new Set();
+      for (const p of Array.isArray(list) ? list : []) {
+        const n = String(p.name || '').toLowerCase();
+        const c = String(p.command || '').toLowerCase();
+        const pathLower = String(p.path || '').toLowerCase();
+        // Edge main browser process (Chromium main process has no --type or --type=browser)
+        if ((n.includes('msedge') || n === 'edge' || /\\msedge\.exe$/.test(pathLower)) && this.isChromiumMainProcess(c)) {
+          set.add(p.pid);
+          continue;
+        }
+        // Copilot app hosted via SystemApps or WebView2; keep it precise to avoid false positives
+        const isCopilotName = /\bcopilot\b/.test(n) || /\bcopilot\b/.test(c);
+        const isCopilotPath = pathLower.includes('windows\\systemapps') && pathLower.includes('copilot');
+        const isWebView2Copilot = (n.includes('msedgewebview2') || /msedgewebview2\.exe$/.test(pathLower)) && /\bcopilot\b/.test(c);
+        if (isCopilotName || isCopilotPath || isWebView2Copilot) {
+          set.add(p.pid);
+          continue;
+        }
+        // Electron-based desktop apps (safe heuristic): executable not under Windows dir AND
+        // command/path indicates app resources (app.asar or app-<version>) and is a top-level process
+        const underWindows = pathLower.includes('\\windows\\');
+        const looksElectron = /electron\.exe$/.test(pathLower) || c.includes('electron') || pathLower.includes('resources\\app.asar') || /\\app-\d/i.test(pathLower);
+        const isHelper = /--type=/.test(c) || /renderer|gpu|utility/.test(c);
+        if (!underWindows && looksElectron && !isHelper) {
+          set.add(p.pid);
+          continue;
+        }
+      }
+      return set;
+    } catch {
+      return new Set();
+    }
+  }
+
+  async collectWindowsVisiblePidsViaTasklist() {
+    // Fallback using tasklist verbose output to discover visible windows (Window Title column)
+    try {
+      const res = await this.execCmd('tasklist /v /fo csv', 3000);
+      // Allow a slightly higher timeout to improve detection when the system is under load
+      if (!res.ok || !res.stdout) {
+        const retry = await this.execCmd('tasklist /v /fo csv', 5500);
+        if (retry.ok && retry.stdout) {
+          res.ok = true; res.stdout = retry.stdout; res.stderr = retry.stderr;
+        }
+      }
+      const set = new Set();
+      if (!res.ok || !res.stdout) return set;
+      const lines = res.stdout.split(/\r?\n/).filter(Boolean);
+      // CSV columns: "Image Name","PID",...,"Window Title"
+      // Skip header
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+        const cols = [];
+        let curr = '';
+        let inQ = false;
+        for (let j = 0; j < line.length; j++) {
+          const ch = line[j];
+          if (ch === '"') { inQ = !inQ; continue; }
+          if (ch === ',' && !inQ) { cols.push(curr); curr = ''; continue; }
+          curr += ch;
+        }
+        cols.push(curr);
+        if (cols.length < 9) continue;
+        const image = String(cols[0] || '').toLowerCase();
+        const pid = Number(String(cols[1] || '').trim()) || 0;
+        const title = String(cols[cols.length - 1] || '').trim();
+        if (!pid) continue;
+        // Visible window: non-empty and not N/A
+        const hasWindow = title && title.toLowerCase() !== 'n/a';
+        if (!hasWindow) continue;
+        // Exclude common system images to reduce false positives
+        const sys = ['svchost.exe','winlogon.exe','dwm.exe','runtimebroker.exe','searchui.exe','shellexperiencehost.exe','applicationframehost.exe'];
+        if (sys.includes(image)) continue;
+        set.add(pid);
       }
       return set;
     } catch {
@@ -217,7 +318,7 @@ class ExamModeService {
       preferredBrowserFamily: String(options.preferredBrowserFamily || '').toLowerCase() || null
     };
     try {
-      const processesRes = await this.safe('processes', () => si.processes(), 6000);
+      const processesRes = await this.safe('processes', () => si.processes(), process.platform === 'win32' ? 10000 : 6000);
       const list = (processesRes && processesRes.list) ? processesRes.list : [];
 
       const simplify = (p) => ({
@@ -243,6 +344,12 @@ class ExamModeService {
       let winMainPidSet = new Set();
       if (isWindows) {
         winMainPidSet = await this.collectWindowsMainAppPids();
+        // Augment with GUI PIDs from tasklist as a robust visible-window fallback
+        const viaTasklist = await this.collectWindowsVisiblePidsViaTasklist();
+        for (const pid of viaTasklist) winMainPidSet.add(pid);
+        // Augment with heuristics for Edge/Electron/Copilot derived from the process list
+        const augment = this.expandWindowsUserAppPidsFromProcesses(list);
+        for (const pid of augment) winMainPidSet.add(pid);
       }
       let macActiveNames = new Set();
       if (isMac) {
@@ -256,6 +363,8 @@ class ExamModeService {
       const isBrowserProcess = (name, cmd) => {
         const n = String(name || '').toLowerCase();
         const c = String(cmd || '').toLowerCase();
+        // Exclude WebView2 host explicitly to avoid false positives
+        if (n.includes('msedgewebview2') || c.includes('msedgewebview2')) return false;
         return /(chrome|chromium|firefox|brave|opera|edge|msedge|safari)/.test(n) || /(chrome|chromium|firefox|brave|opera|edge|msedge|safari)/.test(getExeBase(c)) || /(chrome|chromium|firefox|brave|opera|edge|msedge|safari)/.test(c);
       };
       const browserFamily = (name, cmd) => {
@@ -304,7 +413,16 @@ class ExamModeService {
           if (!likelyUser) continue;
         }
         // Windows: Only consider processes with visible main window in current session
-        if (isWindows && winMainPidSet.size && !winMainPidSet.has(p.pid)) continue;
+        // Apply gating only when we have a non-empty set; otherwise avoid over-filtering
+        if (isWindows) {
+          const gateOk = winMainPidSet.size >= 2; // small sets are unreliable; skip gating when too small
+          if (gateOk && !winMainPidSet.has(p.pid)) continue;
+        }
+        // Windows-specific: exclude shell host that causes false positives
+        if (isWindows) {
+          const exeBase = (() => { const first = String(c || '').split(/\s+/)[0] || ''; return path.basename(first).toLowerCase(); })();
+          if (n === 'applicationframehost.exe' || n === 'applicationframehost' || exeBase === 'applicationframehost.exe') continue;
+        }
         // macOS: Only consider application processes reported as active (not background-only)
         if (isMac && macActiveNames.size) {
           const pname = String(p.name || '').toLowerCase();
@@ -338,8 +456,12 @@ class ExamModeService {
         const fam = browserFamily(p.name, p.command);
         if (!fam) continue;
         // Only count main browser processes to avoid double-counting helpers
-        const isMain = fam === 'firefox' ? true : this.isChromiumMainProcess(p.command);
-        if (!isMain) continue;
+        const isMainForCpu = fam ? (
+          fam === 'firefox' ? true : (
+            fam === 'edge' ? (this.isChromiumMainProcess(p.command) || (!p.command && /msedge/i.test(String(p.name || '')))) : this.isChromiumMainProcess(p.command)
+          )
+        ) : false;
+        if (!isMainForCpu) continue;
         familyCpu.set(fam, (familyCpu.get(fam) || 0) + (Number(p.cpu) || 0));
       }
       const activeBrowsers = Array.from(familyCpu.keys());
@@ -355,7 +477,11 @@ class ExamModeService {
       const flagged = [];
       for (const p of nonSystem) {
         const fam = browserFamily(p.name, p.command);
-        const isMain = fam ? (fam === 'firefox' ? true : this.isChromiumMainProcess(p.command)) : false;
+        const isMain = fam ? (
+          fam === 'firefox' ? true : (
+            fam === 'edge' ? (this.isChromiumMainProcess(p.command) || (!p.command && /msedge/i.test(String(p.name || '')))) : this.isChromiumMainProcess(p.command)
+          )
+        ) : false;
         const allowAsBrowser = allowedBrowserFamily && fam === allowedBrowserFamily && isMain;
         const allowAsCompanion = isCompanion(p.name, p.command);
         if (allowAsBrowser || allowAsCompanion) continue;
@@ -383,6 +509,365 @@ class ExamModeService {
     } catch (e) {
       return { ok: false, error: String(e) };
     }
+  }
+
+  async getAllTabsForBrowser(browserName) {
+    const allTabs = [];
+    const keywords = ['meet','zoom','teams','webex','discord','present','is presenting','sharing','share this tab','screen share','screenshare','sharing screen','sharing your screen','you are sharing','screen sharing','screen-sharing','jitsi','whereby','appear.in','hang','call','video call','conference'];
+    const domains = this.screenSharingDomains || [];
+    const matches = (text) => {
+      const t = String(text || '').toLowerCase();
+      return domains.some(d => t.includes(d)) || keywords.some(k => t.includes(k));
+    };
+
+    try {
+      if (process.platform === 'darwin') {
+        if (browserName.includes('firefox')) {
+          try {
+            const script = `
+              tell application "Firefox"
+                set tabList to {}
+                repeat with w from 1 to count of windows
+                  repeat with t from 1 to count of tabs of window w
+                    set tabURL to URL of tab t of window w
+                    set tabName to name of tab t of window w
+                    set end of tabList to {tabURL, tabName, w, t}
+                  end repeat
+                end repeat
+                return tabList
+              end tell
+            `;
+            const { stdout } = await this.execCmd(`osascript -e '${script}'`, 3000);
+            if (stdout && stdout.trim()) {
+              const tabMatches = stdout.trim().match(/\{([^}]+)\}/g) || [];
+              for (const match of tabMatches) {
+                const parts = match.slice(1, -1).split(', ');
+                if (parts.length >= 2) {
+                  const url = parts[0];
+                  const title = parts[1];
+                  if (matches(url) || matches(title)) {
+                    allTabs.push({ url, title, windowIndex: parts[2] || 1, tabIndex: parts[3] || 1, isSharing: true });
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+        if (browserName.includes('safari')) {
+          try {
+            const script = `
+              tell application "Safari"
+                set tabList to {}
+                repeat with w from 1 to count of windows
+                  repeat with t from 1 to count of tabs of window w
+                    set tabURL to URL of tab t of window w
+                    set tabName to name of tab t of window w
+                    set end of tabList to tabURL & "|||" & tabName & "|||" & w & "|||" & t
+                  end repeat
+                end repeat
+                return tabList
+              end tell
+            `;
+            const { stdout } = await this.execCmd(`osascript -e '${script}'`, 3000);
+            if (stdout && stdout.trim()) {
+              const lines = stdout.trim().split('\n');
+              for (const line of lines) {
+                if (line.includes('|||')) {
+                  const [url, title, windowIndex, tabIndex] = line.split('|||');
+                  if (matches(url) || matches(title)) {
+                    allTabs.push({ url, title, windowIndex: Number(windowIndex) || 1, tabIndex: Number(tabIndex) || 1, isSharing: true });
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+        if (browserName.includes('chrome') || browserName.includes('chromium') || browserName.includes('edge') || browserName.includes('brave') || browserName.includes('opera')) {
+          try {
+            const appName = browserName.includes('edge') ? 'Microsoft Edge' : browserName.includes('brave') ? 'Brave Browser' : browserName.includes('opera') ? 'Opera' : 'Google Chrome';
+            const script = `
+              tell application "${appName}"
+                set tabList to {}
+                repeat with w from 1 to count of windows
+                  repeat with t from 1 to count of tabs of window w
+                    set tabURL to URL of tab t of window w
+                    set tabTitle to title of tab t of window w
+                    set end of tabList to tabURL & "|||" & tabTitle & "|||" & w & "|||" & t
+                  end repeat
+                end repeat
+                return tabList
+              end tell
+            `;
+            const { stdout } = await this.execCmd(`osascript -e '${script}'`, 3000);
+            if (stdout && stdout.trim()) {
+              const lines = stdout.trim().split('\n');
+              for (const line of lines) {
+                if (line.includes('|||')) {
+                  const [url, title, windowIndex, tabIndex] = line.split('|||');
+                  if (matches(url) || matches(title)) {
+                    allTabs.push({ url, title, windowIndex: Number(windowIndex) || 1, tabIndex: Number(tabIndex) || 1, isSharing: true });
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+      } else if (process.platform === 'win32') {
+        // Firefox
+        if (browserName.includes('firefox')) {
+          try {
+            const cmd = `powershell -NoProfile -Command "(Get-Process -Name firefox -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0 } | ForEach-Object { $_.MainWindowTitle + '|||' + $_.Id })"`;
+            const { stdout } = await this.execCmd(cmd, 3000);
+            if (stdout && stdout.trim()) {
+              const lines = stdout.trim().split('\n');
+              for (const line of lines) {
+                if (line.includes('|||')) {
+                  const [title, pid] = line.split('|||');
+                  if (matches(title)) allTabs.push({ title, pid: Number(pid) || 0, isSharing: true });
+                }
+              }
+            }
+          } catch {}
+        }
+        // Chrome/Chromium/Edge/Brave/Opera (by process name)
+        const winMap = [
+          { key: 'chrome', pn: 'chrome' },
+          { key: 'chromium', pn: 'chrome' },
+          { key: 'edge', pn: 'msedge' },
+          { key: 'brave', pn: 'brave' },
+          { key: 'opera', pn: 'opera' }
+        ];
+        for (const m of winMap) {
+          if (!browserName.includes(m.key)) continue;
+          try {
+            const cmd = `powershell -NoProfile -Command "(Get-Process -Name ${m.pn} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0 } | ForEach-Object { $_.MainWindowTitle + '|||' + $_.Id })"`;
+            const { stdout } = await this.execCmd(cmd, 3500);
+            if (stdout && stdout.trim()) {
+              const lines = stdout.trim().split('\n');
+              for (const line of lines) {
+                if (line.includes('|||')) {
+                  const [title, pid] = line.split('|||');
+                  if (matches(title)) allTabs.push({ title, pid: Number(pid) || 0, isSharing: true });
+                }
+              }
+            }
+          } catch {}
+        }
+      } else {
+        try {
+          const { stdout } = await this.execCmd('wmctrl -lx 2>/dev/null || true', 2000);
+          const lines = (stdout || '').split(/\r?\n/);
+          for (const line of lines) {
+            if (!line) continue;
+            const lower = line.toLowerCase();
+            if (browserName.includes('firefox') && lower.includes('firefox')) {
+              const parts = line.trim().split(/\s+/);
+              const title = parts.slice(4).join(' ');
+              if (matches(title)) allTabs.push({ title, isSharing: true });
+            } else if ((browserName.includes('chrome') || browserName.includes('chromium')) && (lower.includes('chrome') || lower.includes('chromium'))) {
+              const parts = line.trim().split(/\s+/);
+              const title = parts.slice(4).join(' ');
+              if (matches(title)) allTabs.push({ title, isSharing: true });
+            }
+          }
+        } catch {}
+      }
+    } catch {}
+    return allTabs;
+  }
+
+  async resolveSharingTabInfoForBrowser(browserName) {
+    const keywords = ['meet','zoom','teams','webex','discord','present','is presenting','sharing','share this tab','screen share','screenshare','sharing screen','sharing your screen','you are sharing','screen sharing','screen-sharing','jitsi','whereby','appear.in','hang','call','video call','conference'];
+    const domains = this.screenSharingDomains || [];
+    const matches = (text) => {
+      const t = String(text || '').toLowerCase();
+      return domains.some(d => t.includes(d)) || keywords.some(k => t.includes(k));
+    };
+    try {
+      if (process.platform === 'darwin') {
+        const map = [
+          { key: 'chrome', app: 'Google Chrome' },
+          { key: 'edge', app: 'Microsoft Edge' },
+          { key: 'brave', app: 'Brave Browser' },
+          { key: 'opera', app: 'Opera' },
+        ];
+        for (const b of map) {
+          if (!browserName.includes(b.key)) continue;
+          try {
+            const script = `tell application "${b.app}" to set _t to {URL, title} of active tab of front window\nreturn (item 1 of _t) & '|||' & (item 2 of _t)`;
+            const { stdout } = await this.execCmd(`osascript -e '${script}'`, 2000);
+            const out = (stdout || '').trim();
+            if (out && out.includes('|||')) {
+              const [u, t] = out.split('|||');
+              if (matches(u) || matches(t)) return { url: u, title: t };
+            }
+          } catch {}
+        }
+        if (browserName.includes('safari')) {
+          try {
+            const script = 'tell application "Safari" to set _t to {URL, name} of current tab of front window\nreturn (item 1 of _t) & "|||" & (item 2 of _t)';
+            const { stdout } = await this.execCmd(`osascript -e '${script}'`, 2000);
+            const out = (stdout || '').trim();
+            if (out && out.includes('|||')) {
+              const [u, t] = out.split('|||');
+              if (matches(u) || matches(t)) return { url: u, title: t };
+            }
+          } catch {}
+        }
+        if (browserName.includes('firefox')) {
+          try {
+            const script = 'tell application "Firefox" to set _t to {URL of active tab of front window, name of active tab of front window}\nreturn (item 1 of _t) & "|||" & (item 2 of _t)';
+            const { stdout } = await this.execCmd(`osascript -e '${script}'`, 2000);
+            const out = (stdout || '').trim();
+            if (out && out.includes('|||')) {
+              const [u, t] = out.split('|||');
+              if (matches(u) || matches(t)) return { url: u, title: t };
+            }
+          } catch {}
+        }
+        return null;
+      } else if (process.platform === 'win32') {
+        const procNames = [];
+        if (browserName.includes('chrome')) procNames.push('chrome');
+        if (browserName.includes('edge')) procNames.push('msedge');
+        if (browserName.includes('firefox')) procNames.push('firefox');
+        if (browserName.includes('brave')) procNames.push('brave');
+        if (browserName.includes('opera')) procNames.push('opera');
+        for (const pn of procNames) {
+          try {
+            const cmd = `powershell -NoProfile -Command "(Get-Process -Name ${pn} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0 } | Sort-Object CPU -Descending | Select-Object -First 1 -ExpandProperty MainWindowTitle)"`;
+            const { stdout } = await this.execCmd(cmd, 2000);
+            const title = (stdout || '').trim();
+            if (title && matches(title)) return { title };
+          } catch {}
+        }
+        return null;
+      } else {
+        try {
+          const { stdout } = await this.execCmd('wmctrl -lx 2>/dev/null || true', 2000);
+          const lines = (stdout || '').split(/\r?\n/);
+          for (const line of lines) {
+            if (!line) continue;
+            const lower = line.toLowerCase();
+            if (!(lower.includes('chrome') || lower.includes('chromium') || lower.includes('firefox') || lower.includes('edge') || lower.includes('brave') || lower.includes('opera'))) continue;
+            const parts = line.trim().split(/\s+/);
+            const title = parts.slice(4).join(' ');
+            if (matches(title)) return { title };
+          }
+        } catch {}
+        return null;
+      }
+    } catch { return null; }
+  }
+
+  async getActiveScreenSharingTabs() {
+    const result = [];
+    try {
+      // Build families from running processes to limit checks
+      const processesRes = await this.safe('processes', () => si.processes(), process.platform === 'win32' ? 8000 : 4000);
+      const list = (processesRes && processesRes.list) ? processesRes.list : [];
+      const families = new Set();
+      for (const p of (list || [])) {
+        const n = String(p.name || '').toLowerCase();
+        if (/chrome|chromium|firefox|edge|msedge|brave|opera|safari/.test(n)) {
+          if (n.includes('chromium')) families.add('chromium');
+          else if (n.includes('edge') || n.includes('msedge')) families.add('edge');
+          else if (n.includes('brave')) families.add('brave');
+          else if (n.includes('opera')) families.add('opera');
+          else if (n.includes('safari')) families.add('safari');
+          else if (n.includes('firefox')) families.add('firefox');
+          else families.add('chrome');
+        }
+      }
+      for (const fam of families) {
+        const tabs = await this.getAllTabsForBrowser(fam);
+        if (Array.isArray(tabs) && tabs.length) {
+          result.push({ browser: fam, tabs });
+          continue;
+        }
+        const info = await this.resolveSharingTabInfoForBrowser(fam);
+        if (info && (info.title || info.url)) {
+          result.push({ browser: fam, tabs: [info] });
+        }
+      }
+    } catch {}
+    return result;
+  }
+
+  async checkBrowserAccess(browserKey) {
+    try {
+      if (process.platform === 'darwin') {
+        const appMap = new Map([
+          ['chrome', 'Google Chrome'],
+          ['edge', 'Microsoft Edge'],
+          ['brave', 'Brave Browser'],
+          ['opera', 'Opera'],
+          ['safari', 'Safari'],
+          ['firefox', 'Firefox']
+        ]);
+        const app = appMap.get(browserKey) || null;
+        if (!app) return false;
+        // Attempt to read active tab title/URL to infer permission
+        const script = browserKey === 'safari'
+          ? 'tell application "Safari" to set _t to {URL, name} of current tab of front window\nreturn (item 1 of _t) & "||" & (item 2 of _t)'
+          : `tell application "${app}" to set _t to {URL, title} of active tab of front window\nreturn (item 1 of _t) & "||" & (item 2 of _t)`;
+        const res = await this.execCmd(`osascript -e '${script}'`, 2000);
+        return Boolean(res.ok && res.stdout && res.stdout.trim());
+      } else if (process.platform === 'win32') {
+        // Consider access granted if we can read a non-empty MainWindowTitle for the browser
+        const pn = browserKey === 'edge' ? 'msedge' : browserKey;
+        const cmd = `powershell -NoProfile -Command "(Get-Process -Name ${pn} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1 -ExpandProperty MainWindowTitle)"`;
+        const { stdout } = await this.execCmd(cmd, 2500);
+        return Boolean((stdout || '').trim());
+      } else {
+        // Linux: require wmctrl present and a browser window to be visible
+        const tools = await this.execCmd('command -v wmctrl || true', 1000);
+        if (!tools.stdout || !tools.stdout.trim()) return false;
+        const { stdout } = await this.execCmd('wmctrl -lx 2>/dev/null || true', 2000);
+        if (!stdout) return false;
+        const lower = stdout.toLowerCase();
+        if (browserKey === 'edge') return lower.includes('edge') || lower.includes('microsoft-edge');
+        return lower.includes(browserKey);
+      }
+    } catch { return false; }
+  }
+
+  async runBrowserTabPermissionFlow() {
+    const outcome = { platform: process.platform, browsers: [], flagged: [], sharing: [] };
+    try {
+      // Identify running browsers
+      const processesRes = await this.safe('processes', () => si.processes(), process.platform === 'win32' ? 8000 : 4000);
+      const list = (processesRes && processesRes.list) ? processesRes.list : [];
+      const families = new Set();
+      for (const p of (list || [])) {
+        const n = String(p.name || '').toLowerCase();
+        if (/chrome|chromium|firefox|edge|msedge|brave|opera|safari/.test(n)) {
+          if (n.includes('chromium')) families.add('chromium');
+          else if (n.includes('edge') || n.includes('msedge')) families.add('edge');
+          else if (n.includes('brave')) families.add('brave');
+          else if (n.includes('opera')) families.add('opera');
+          else if (n.includes('safari')) families.add('safari');
+          else if (n.includes('firefox')) families.add('firefox');
+          else families.add('chrome');
+        }
+      }
+      // Evaluate permission per browser
+      for (const browser of families) {
+        const granted = await this.checkBrowserAccess(browser);
+        outcome.browsers.push({ browser, granted });
+        if (!granted) {
+          // Flag denied browser as malicious per requirement
+          outcome.flagged.push({ type: 'malicious_browser_permission_denied', severity: 'high', browser });
+          continue;
+        }
+        // Access granted → collect tabs and mark sharing
+        const tabs = await this.getAllTabsForBrowser(browser);
+        const info = tabs && tabs.length ? tabs : [];
+        const sharingTabs = (info || []).filter(t => (t.isSharing === true) || (t.title && typeof t.title === 'string'));
+        outcome.sharing.push({ browser, tabs: info, tabCount: info.length, sharingCount: sharingTabs.length });
+      }
+    } catch {}
+    return outcome;
   }
 }
 
