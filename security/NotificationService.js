@@ -120,6 +120,8 @@ class NotificationService {
 
     // Only consider active (non-background) processes across all OSes
     const activeProcesses = (processes || []).filter(p => !p.backgroundLikely);
+    // Windows-specific: capture background apps as well (to gate exam flow when present)
+    const backgroundAppsWindows = (process.platform === 'win32') ? ((processes || []).filter(p => p.backgroundLikely)) : [];
 
     // Build set of browsers with notifications enabled in any active profile
     const enabledBrowsers = new Set();
@@ -163,9 +165,9 @@ class NotificationService {
 
     // Linux flow override: only enforce DND; do not report apps/browsers
     if (process.platform === 'linux') {
-      return { system, browsers: [], processes: [] };
+      return { system, browsers: [], processes: [], backgroundAppsWindows: [] };
     }
-    return { system, browsers, processes: filteredProcesses };
+    return { system, browsers, processes: filteredProcesses, backgroundAppsWindows };
   }
 
   async #detectSystemNotificationSetting() {

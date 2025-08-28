@@ -1,5 +1,6 @@
 const http = require('http');
 const { WebSocketServer } = require('ws');
+const { AppEvent, AllowedOutboundEvents } = require('./EventBus');
 
 class LocalServer {
   constructor(eventBus, options = {}) {
@@ -56,16 +57,25 @@ class LocalServer {
 
     this.wss.on('connection', (ws) => {
       clients.add(ws);
-      ws.on('close', () => clients.delete(ws));
+      try { this.eventBus.emitEvent(AppEvent.CLIENT_AND_APP_CONNECTED, { reason: 'ws_connection_established_Local' }); } catch {}
+      ws.on('close', () => {
+        clients.delete(ws);
+        try { this.eventBus.emitEvent(AppEvent.CLIENT_AND_APP_DISCONNECTED, { reason: 'ws_connection_closed' }); } catch {}
+      });
     });
 
     this.unsubscribe = this.eventBus.subscribe((message) => {
-      const json = JSON.stringify(message);
-      for (const ws of clients) {
-        try {
-          if (ws.readyState === 1) ws.send(json);
-        } catch {}
-      }
+      // Only forward allowed outbound events; drop stages and unapproved events
+      try {
+        if (!message || message.kind !== 'event') return;
+        if (!AllowedOutboundEvents || !AllowedOutboundEvents.has(String(message.name))) return;
+        const json = JSON.stringify({ kind: 'event', name: message.name, payload: message.payload || null, ts: message.ts || Date.now() });
+        for (const ws of clients) {
+          try {
+            if (ws.readyState === 1) ws.send(json);
+          } catch {}
+        }
+      } catch {}
     });
 
     this.server.listen(this.port, this.host);
@@ -85,6 +95,7 @@ class LocalServer {
 }
 
 module.exports = { LocalServer };
+
 
 
 

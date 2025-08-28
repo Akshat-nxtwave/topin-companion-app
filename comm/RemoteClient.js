@@ -1,4 +1,5 @@
 const { WebSocket } = require('ws');
+const { AppEvent } = require('./EventBus');
 
 class RemoteClient {
   constructor(eventBus, options = {}) {
@@ -48,11 +49,12 @@ class RemoteClient {
     }
 
     this.ws.on('open', () => {
-      // no-op; server may require an initial handshake; app can add later
+      try { this.eventBus.emitEvent(AppEvent.CLIENT_AND_APP_CONNECTED, { reason: 'remote_ws_open' }); } catch {}
     });
 
     this.ws.on('close', () => {
       this.ws = null;
+      try { this.eventBus.emitEvent(AppEvent.CLIENT_AND_APP_DISCONNECTED, { reason: 'remote_ws_close' }); } catch {}
       if (!this._stopped) setTimeout(() => this._connect(), this.reconnectDelayMs);
     });
 
@@ -63,14 +65,17 @@ class RemoteClient {
 
   _send(message) {
     try {
-      if (this.ws && this.ws.readyState === 1) {
-        this.ws.send(JSON.stringify(message));
-      }
+      if (!message || message.kind !== 'event') return; // never forward stages
+      // Only send whitelisted events; RemoteClient trusts LocalServer filtering too, but we double-guard here
+      const { AllowedOutboundEvents } = require('./EventBus');
+      if (!AllowedOutboundEvents || !AllowedOutboundEvents.has(String(message.name))) return;
+      if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify({ kind: 'event', name: message.name, payload: message.payload || null, ts: message.ts || Date.now() }));
     } catch {}
   }
 }
 
 module.exports = { RemoteClient };
+
 
 
 
