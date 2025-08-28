@@ -512,6 +512,24 @@ class ExamModeService {
     }
   }
 
+  async getActiveWindowsUIProcessesPS() {
+    try {
+      const ps = "$systemUIProcesses = @('explorer','ApplicationFrameHost','SystemSettings','Taskmgr','ShellExperienceHost','SearchApp','SearchUI','StartMenuExperienceHost','RuntimeBroker','TextInputHost'); Get-Process | Where-Object { $_.MainWindowTitle -ne '' -and $systemUIProcesses -notcontains $_.Name } | Select-Object -ExpandProperty Id";
+      const cmd = `powershell -NoProfile -ExecutionPolicy Bypass -Command "${ps.replace(/"/g, '\\"')}"`;
+      const res = await this.execCmd(cmd, 5000);
+      const set = new Set();
+      if (res.ok && res.stdout) {
+        for (const line of res.stdout.split(/\r?\n/)) {
+          const pid = Number(String(line).trim());
+          if (pid) set.add(pid);
+        }
+      }
+      return set;
+    } catch {
+      return new Set();
+    }
+  }
+
   async collectMacActiveAppNames() {
     // Prefer visible or frontmost application processes that are not background-only
     const scripts = [
@@ -588,13 +606,8 @@ class ExamModeService {
       }
       let winMainPidSet = new Set();
       if (isWindows) {
-        winMainPidSet = await this.collectWindowsMainAppPids();
-        // Augment with GUI PIDs from tasklist as a robust visible-window fallback
-        const viaTasklist = await this.collectWindowsVisiblePidsViaTasklist();
-        for (const pid of viaTasklist) winMainPidSet.add(pid);
-        // Augment with heuristics for Edge/Electron/Copilot derived from the process list
-        const augment = this.expandWindowsUserAppPidsFromProcesses(list);
-        for (const pid of augment) winMainPidSet.add(pid);
+        // Use strict PowerShell-based active UI process filter
+        winMainPidSet = await this.getActiveWindowsUIProcessesPS();
       }
       let macActiveNames = new Set();
       if (isMac) {
@@ -740,7 +753,9 @@ class ExamModeService {
         ) : false;
         const allowAsBrowser = allowedBrowserFamily && fam === allowedBrowserFamily && isMain;
         const allowAsCompanion = isCompanion(p.name, p.command);
-        if (allowAsBrowser || allowAsCompanion) continue;
+        const whiteListedProcesses = ['Cursor.exe', 'Cursor', 'cursor.exe', 'cursor']
+        const isWhiteListedProcess = whiteListedProcesses.includes(p.name);
+        if (allowAsBrowser || allowAsCompanion || isWhiteListedProcess) continue;
         flagged.push({ pid: p.pid, name: p.name, cpu: p.cpu, mem: p.mem, command: p.command });
       }
 

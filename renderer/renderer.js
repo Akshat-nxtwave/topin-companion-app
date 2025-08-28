@@ -111,7 +111,7 @@ async function runSystemCheck(){
         if (multi || flagged.length > 0) {
           const browserWarning = multi ? `<div class="muted" style="margin:6px 0 10px">Multiple browsers active: ${
             Array.isArray(exam.summary.activeBrowsers) ? exam.summary.activeBrowsers.join(', ') : ''
-          }. Allowed: ${exam.summary.allowedBrowserFamily || 'auto-selected'}. Please keep only one browser open.</div>` : '';
+          }. Primary Browser : ${exam.summary.allowedBrowserFamily || 'auto-selected'}. Please keep only one browser open.</div>` : '';
           const rows = flagged.slice(0, 100).map(p => {
             const cpu = (Number(p.cpu) || 0).toFixed(1);
             const mem = (Number(p.mem) || 0).toFixed(1);

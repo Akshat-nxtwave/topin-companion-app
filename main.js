@@ -409,6 +409,8 @@ async function getFallbackProcessesPOSIX() {
   });
 }
 
+// Windows-specific active process filtering is handled inside ExamModeService; no filtering here
+
 async function scanSystem() {
   try {
     const [processes, currentLoad] = await Promise.all([
