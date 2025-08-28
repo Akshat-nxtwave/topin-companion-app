@@ -124,6 +124,22 @@ class NotificationService {
       return { system, mac, browsers: [], processes: [] };
     }
 
+    // Windows: Treat DND OFF as violation; additionally, flag restricted background apps (blacklist)
+    if (process.platform === 'win32') {
+      const system = await this.#detectSystemNotificationSetting();
+      const allBackground = await this.#getAllBackgroundProcessesWindows();
+      // Blacklist of restricted apps to flag when running in background
+      const keywords = ['teams','msteams','ms-teams','microsoft teams','discord','slack','whatsapp','telegram'];
+      const restrictedBackground = (allBackground || []).filter(p => {
+        const n = String(p.name || '').toLowerCase();
+        return keywords.some(k => n.includes(k));
+      });
+      // Only show in UI when there are more than one entries, per requirement
+      const processes = restrictedBackground.length > 1 ? restrictedBackground : [];
+      const backgroundAppsWindows = restrictedBackground;
+      return { system, browsers: [], processes, backgroundAppsWindows };
+    }
+
     // Non-macOS: keep existing behavior
     const [system, browsers, processes] = await Promise.all([
       this.#detectSystemNotificationSetting(),
@@ -644,6 +660,59 @@ Write-Output $state`;
       this.#log('#detectWindowsFocusStatus exception', String(e));
       return null;
     }
+  }
+
+  async #getWindowsVisiblePidSet() {
+    if (process.platform !== 'win32') return new Set();
+    try {
+      return await new Promise(resolve => {
+        const ps = "Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -ne '' } | Select-Object -ExpandProperty Id";
+        exec(`powershell -NoProfile -ExecutionPolicy Bypass -Command "${ps}"`, { timeout: 2500 }, (err, stdout) => {
+          const set = new Set();
+          if (err || !stdout) return resolve(set);
+          for (const line of String(stdout || '').split(/\r?\n/)) {
+            const pid = Number(String(line).trim());
+            if (pid) set.add(pid);
+          }
+          resolve(set);
+        });
+      });
+    } catch { return new Set(); }
+  }
+
+  async #getAllBackgroundProcessesWindows() {
+    try {
+      const [visibleSet, proc] = await Promise.all([
+        this.#getWindowsVisiblePidSet(),
+        si.processes()
+      ]);
+      const list = (proc && proc.list) ? proc.list : [];
+      const results = [];
+      for (const p of list) {
+        const pid = Number(p.pid) || 0;
+        if (!pid) continue;
+        const isBackground = !visibleSet.has(pid);
+        if (!isBackground) continue;
+        const nameLower = String(p.name || '').toLowerCase();
+        const cmdLower = String(p.command || '').toLowerCase();
+        const pathLower = String(p.path || '').toLowerCase();
+        if (nameLower === 'win32' || nameLower === 'darwin') continue;
+        if (nameLower.includes('crashpad') || cmdLower.includes('crashpad')) continue;
+        const sysImages = new Set(['svchost.exe','winlogon.exe','dwm.exe','system','registry']);
+        if (sysImages.has(nameLower)) continue;
+        if (pathLower.includes('\\windows\\')) continue;
+        results.push({
+          pid,
+          name: p.name || 'unknown',
+          path: p.path,
+          cpu: Number.isFinite(p.pcpu) ? p.pcpu : 0,
+          mem: Number.isFinite(p.pmem) ? p.pmem : 0,
+          state: String(p.state || '').toLowerCase(),
+          backgroundLikely: true
+        });
+      }
+      return results;
+    } catch { return []; }
   }
 
   async #detectBrowserNotificationSettings() {
