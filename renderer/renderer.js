@@ -136,12 +136,20 @@ async function runSystemCheck(){
     const audit = await window.companion.auditNotifications();
     if (audit) {
       const sys = audit.system;
+      const threats = Array.isArray(audit.threats) ? audit.threats : [];
       const browsers = audit.browsers || [];
-      const procs = audit.threats?.length ? (audit.processes || []) : (audit.processes || []);
+      const procs = audit.processes || [];
+
+      // Detect DND violation threats explicitly
+      const dndThreat = threats.find(t => t && (
+        t.type === 'mac_focus_mode_disabled' ||
+        t.type === 'linux_dnd_required' ||
+        t.type === 'windows_dnd_off'
+      ));
 
       const anyNeedsDisable = (browsers || []).some(b => (b.profiles || []).some(p => p.status !== 'disabled'));
       const anyProc = procs.length > 0;
-      const showTables = anyNeedsDisable || anyProc;
+      const showTables = anyNeedsDisable || anyProc || !!dndThreat;
 
       if (showTables) {
         const sysTable = `
@@ -151,6 +159,8 @@ async function runSystemCheck(){
     <tr><td>${sys.platform}</td><td>${sys.status}</td><td>${sys.details || ''}</td></tr>
   </tbody>
 </table>`;
+
+        const dndBanner = dndThreat ? `<div class="muted" style="margin:6px 0 10px">Do Not Disturb is OFF. Please enable it to proceed.</div>` : '';
 
         const browserRows = browsers.map(b => {
           const activeProfiles = (b.profiles || []).filter(p => p.status !== 'disabled');
@@ -179,14 +189,28 @@ async function runSystemCheck(){
 </table>`;
 
         const instruction = anyNeedsDisable ? `<div class="muted" style="margin:6px 0 10px">You are required to disable notification settings for the browser.</div>` : '';
-        notifAuditEl.innerHTML = sysTable + instruction + browserTable + procTable;
+        notifAuditEl.innerHTML = sysTable + dndBanner + instruction + browserTable + procTable;
+        // Bind button if present
+        // try {
+        //   const btn = document.getElementById('openNotifSettingsBtn');
+        //   if (btn) {
+        //     btn.addEventListener('click', async () => {
+        //       try { await window.companion.openNotificationSettings(); } catch {}
+        //     });
+        //   }
+        // } catch {}
       } else {
         notifAuditEl.innerHTML = '';
       }
 
-      if ((audit.threats && audit.threats.length) || anyNeedsDisable || anyProc) {
-        globalStatusEl.textContent = 'Action required: Notifications are ON';
-        globalHintEl.innerHTML = 'Please disable notifications in your browser/apps, then re-run the check.';
+      if ((threats.length > 0) || anyNeedsDisable || anyProc) {
+        if (dndThreat) {
+          globalStatusEl.textContent = 'Action required: Do Not Disturb is OFF';
+          globalHintEl.innerHTML = 'Enable Do Not Disturb in system settings, then re-run the check.';
+        } else {
+          globalStatusEl.textContent = 'Action required: Notifications are ON';
+          globalHintEl.innerHTML = 'Please disable notifications in your browser/apps, then re-run the check.';
+        }
         return;
       }
     }

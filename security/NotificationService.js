@@ -88,7 +88,20 @@ class NotificationService {
     const platform = process.platform;
     try {
       const { shell } = require('electron');
-      if (platform === 'darwin') { await shell.openExternal('x-apple.systempreferences:com.apple.preference.notifications'); return true; }
+      if (platform === 'darwin') {
+        // Prefer opening Focus (Do Not Disturb) tab directly; fall back to Notifications pane
+        const urls = [
+          'x-apple.systempreferences:com.apple.Focus',
+
+          // 'x-apple.systempreferences:com.apple.preference.notifications?focus',
+          // 'x-apple.systempreferences:com.apple.preference.notifications?DoNotDisturb',
+          // 'x-apple.systempreferences:com.apple.preference.focus'
+        ];
+        for (const u of urls) {
+          try { await shell.openExternal(u); return true; } catch {}
+        }
+        return false;
+      }
       if (platform === 'win32') { await shell.openExternal('ms-settings:notifications'); return true; }
       const envDesktop = (process.env.XDG_CURRENT_DESKTOP || '').toLowerCase();
       if (envDesktop.includes('gnome')) { await shell.openExternal('gnome-control-center notifications'); return true; }

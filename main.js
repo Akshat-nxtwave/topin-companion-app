@@ -88,6 +88,28 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
     }
   } catch {}
 
+  // Windows: treat system DND (Focus Assist) OFF as a violation
+  try {
+    const sys = auditResult.system || {};
+    const platform = String(sys.platform || process.platform);
+    if (platform === "win32") {
+      const status = String(sys.status || "").toLowerCase();
+      const dndOn = status === "disabled"; // notifications disabled => DND ON
+      if (!dndOn) {
+        threats.push({
+          type: "windows_dnd_off",
+          severity: "high",
+          message: "Enable Focus Assist (Do Not Disturb) to proceed",
+          action:
+            "Open Windows Settings > System > Notifications (or Focus Assist) and enable Do Not Disturb",
+          userActionRequired: true,
+          settingsRequired: true,
+          details: sys.details || "Focus Assist OFF",
+        });
+      }
+    }
+  } catch {}
+
   // EXCLUDE system notifications from threat analysis as per user requirement
   // System notifications are not considered threats
   const systemProcessNameExclusions = new Set(["win32", "darwin"]);
@@ -476,6 +498,7 @@ ipcMain.handle("app:auditNotifications", async (_evt, _providedScanId) => {
   try {
     const scanId = Date.now();
     const audit = await notificationService.auditNotifications();
+    const notificationThreats = analyzeNotificationThreatsFromAudit(audit);
 
     // Rule 1: If DND is not active on any OS → emit ACTIVE_NOTIFICATION_SERVICE
     const sys = audit.system || {};
@@ -592,6 +615,10 @@ class SteppedScanManager {
       console.log("📱 Auditing notification settings...");
 
       const auditResult = await notificationService.auditNotifications();
+      const notificationThreats = analyzeNotificationThreatsFromAudit(auditResult);
+      this.detections.notifications = Array.isArray(notificationThreats)
+        ? notificationThreats
+        : [];
 
       // Step rule application:
       const sys = auditResult.system || {};

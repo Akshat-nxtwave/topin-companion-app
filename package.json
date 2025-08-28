@@ -75,11 +75,19 @@
       ]
     },
     "mac": {
+      "category": "public.app-category.utilities",
       "target": [
         "dmg",
         "zip"
       ],
-      "hardenedRuntime": false
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "This app uses Apple Events to open system settings for permissions.",
+        "LSApplicationCategoryType": "public.app-category.utilities"
+      }
     }
   }
 }
