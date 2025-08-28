@@ -18,26 +18,27 @@
     "build": "electron-builder",
     "build:linux": "electron-builder --linux",
     "build:win": "electron-builder --win",
+    "dist:win": "electron-builder --win --publish never",
     "build:win:zip": "electron-builder --win zip --publish never",
     "build:mac": "electron-builder --mac",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
-    "electron": "31",
     "systeminformation": "^5.21.23",
     "ws": "^8.17.0"
   },
   "devDependencies": {
+    "electron": "31",
     "electron-builder": "^24.13.3"
   },
   "build": {
     "appId": "com.topin.companion",
     "productName": "TOPIN Companion",
-    "publish": "never",
     "directories": {
       "output": "dist"
     },
     "asar": true,
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [
       "main.js",
       "preload.js",
@@ -73,6 +74,15 @@
         "nsis",
         "zip"
       ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "TOPIN Companion"
     },
     "mac": {
       "category": "public.app-category.utilities",
