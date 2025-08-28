@@ -21,7 +21,7 @@ class NotificationService {
   }
 
   #log(...args) {
-    if (this.logging || true) {
+    if (this.logging) {
       try { console.log('[NotificationService]', ...args); } catch {}
     }
   }

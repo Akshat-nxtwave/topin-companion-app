@@ -481,7 +481,7 @@ ipcMain.handle("app:auditNotifications", async (_evt, _providedScanId) => {
 
     // Rule 2: Additionally for Windows, if any background apps detected → emit ACTIVE_NOTIFICATION_SERVICE
     const bgApps = Array.isArray(audit.backgroundAppsWindows)
-      ? audit.backgroundAppsWindowskind
+      ? audit.backgroundAppsWindows
       : [];
     const windowsBgDetected = process.platform === "win32" && bgApps.length > 0;
 
@@ -974,6 +974,8 @@ function armSequentialCompletionExpiry() {
 }
 
 ipcMain.handle("app:scan", async (_evt, _providedScanId) => {
+
+  console.log('app:scan    =========================>  ')
   // Use legacy scan for compatibility with existing UI
   const res = await legacyScan({});
   try {
@@ -1004,6 +1006,7 @@ ipcMain.handle("app:scan", async (_evt, _providedScanId) => {
 });
 
 ipcMain.handle("app:completeSystemCheck", async () => {
+  console.log('app:completeSystemCheck ======================>  ')
   // New comprehensive check that coordinates both security and notifications
   return completeSystemCheck();
 });
@@ -1223,7 +1226,6 @@ ipcMain.handle("app:runExamModeCheck", async (_evt, options) => {
     const opts = Object.assign({}, defaults, options || {});
     // On Linux, route to SecurityService for threat/malicious detection instead of ExamModeService
     if (process.platform === "linux") {
-      console.log("HELLLLLOOOOO");
       const [systemReport, threats] = await Promise.all([
         scanSystem().catch(() => ({
           processes: [],
@@ -1266,6 +1268,17 @@ ipcMain.handle("app:runExamModeCheck", async (_evt, options) => {
           items: flagged,
           summary: { totalProcesses: (systemReport.processes || []).length },
         });
+        // Security/exam half not clean → reset pairing
+        clearSequentialCompletion();
+      } else {
+        // Security/exam half clean → mark complete; emit NO_ISSUES_DETECTED only if notifications already clean
+        sequentialCompletion.suspiciousComplete = true;
+        if (sequentialCompletion.notifComplete && sequentialCompletion.suspiciousComplete) {
+          try { eventBus.emitEvent(AppEvent.NO_ISSUES_DETECTED, { scanId: Date.now(), flow: 'sequential_checks' }); } catch {}
+          clearSequentialCompletion();
+        } else {
+          armSequentialCompletionExpiry();
+        }
       }
 
       return {
@@ -1289,16 +1302,19 @@ ipcMain.handle("app:runExamModeCheck", async (_evt, options) => {
 
     const res = await examModeService.runExamModeChecks(opts);
     try {
-      if (
-        res &&
-        res.ok &&
-        Array.isArray(res.flagged) &&
-        res.flagged.length > 0
-      ) {
-        eventBus.emitEvent(AppEvent.DETECTED_UNWANTED_APPS, {
-          items: res.flagged,
-          summary: res.summary || {},
-        });
+      const hasUnwanted = res && res.ok && Array.isArray(res.flagged) && res.flagged.length > 0;
+      if (hasUnwanted) {
+        eventBus.emitEvent(AppEvent.DETECTED_UNWANTED_APPS, { items: res.flagged, summary: res.summary || {} });
+        clearSequentialCompletion();
+      } else if (res && res.ok) {
+        // Security/exam half clean → mark complete; emit NO_ISSUES_DETECTED only if notifications already clean
+        sequentialCompletion.suspiciousComplete = true;
+        if (sequentialCompletion.notifComplete && sequentialCompletion.suspiciousComplete) {
+          try { eventBus.emitEvent(AppEvent.NO_ISSUES_DETECTED, { scanId: Date.now(), flow: 'sequential_checks' }); } catch {}
+          clearSequentialCompletion();
+        } else {
+          armSequentialCompletionExpiry();
+        }
       }
     } catch {}
     return res;

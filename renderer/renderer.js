@@ -20,7 +20,6 @@ function setNotifStatus(status){
 async function setFocusStatus(){
   try {
     const res = await window.companion.getFocusStatus();
-    console.log(res,'pppppppppppppppwww')
     if (!focusStatusEl) return;
     if (!res || res.supported === false) {
       focusStatusEl.textContent = 'Focus: Unsupported';
