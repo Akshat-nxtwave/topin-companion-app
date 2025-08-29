@@ -19,21 +19,22 @@
     "build:linux": "electron-builder --linux",
     "build:win": "electron-builder --win",
     "build:win:zip": "electron-builder --win zip --publish never",
-    "build:mac": "electron-builder --mac",
+    "build:mac": "dotenv -e .env electron-builder --mac --publish=never",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
-    "electron": "31",
     "systeminformation": "^5.21.23",
     "ws": "^8.17.0"
   },
   "devDependencies": {
+    "electron": "31",
+    "dotenv-cli": "^10.0.0",
     "electron-builder": "^24.13.3"
   },
   "build": {
     "appId": "com.topin.companion",
     "productName": "TOPIN Companion",
-    "publish": "never",
+    "artifactName": "TOPIN-Companion-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "dist"
     },
@@ -73,6 +74,14 @@
         "nsis",
         "zip"
       ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TOPIN Companion"
     },
     "mac": {
       "category": "public.app-category.utilities",
