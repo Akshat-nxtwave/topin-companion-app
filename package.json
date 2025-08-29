@@ -18,6 +18,7 @@
     "build": "electron-builder",
     "build:linux": "electron-builder --linux",
     "build:win": "electron-builder --win",
+    "dist:win": "electron-builder --win --publish never",
     "build:win:zip": "electron-builder --win zip --publish never",
     "build:mac": "dotenv -e .env electron-builder --mac --publish=never",
     "postinstall": "electron-builder install-app-deps"
@@ -39,6 +40,7 @@
       "output": "dist"
     },
     "asar": true,
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [
       "main.js",
       "preload.js",
@@ -78,8 +80,9 @@
     "nsis": {
       "oneClick": true,
       "perMachine": false,
+      "allowElevation": true,
       "allowToChangeInstallationDirectory": false,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "TOPIN Companion"
     },
