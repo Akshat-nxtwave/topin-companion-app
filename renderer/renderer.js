@@ -250,10 +250,19 @@ scanBtn.addEventListener('click', runSystemCheck);
   // Load initial focus status (macOS)
   try { await setFocusStatus(); } catch {}
   if (unsubscribeAutoScan) { try { unsubscribeAutoScan(); } catch {} }
+  // Subscribe to auto-scan results only; auto-scan is started by main process
   unsubscribeAutoScan = window.companion.onAutoScanResult(() => {
     if (!isChecking) runSystemCheck();
+    try {
+      const badge = document.getElementById('autoScanBadge');
+      if (badge) {
+        badge.classList.remove('pulse');
+        // trigger reflow to restart animation
+        void badge.offsetWidth;
+        badge.classList.add('pulse');
+      }
+    } catch {}
   });
-  try { await window.companion.startAutoScan(30000); } catch {}
 })();
 
 window.addEventListener('beforeunload', () => {

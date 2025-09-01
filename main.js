@@ -351,6 +351,13 @@ app.whenReady().then(() => {
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+
+  // Auto-start background scan 5 seconds after app is ready
+  try {
+    setTimeout(() => {
+      try { startAutoScanWorker(30000); } catch {}
+    }, 5000);
+  } catch {}
 });
 
 app.on("window-all-closed", () => {
