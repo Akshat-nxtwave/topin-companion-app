@@ -17,6 +17,9 @@
     "dist": "electron-builder",
     "build": "electron-builder",
     "build:linux": "electron-builder --linux",
+    "build:linux:local": "electron-builder --linux --publish never",
+    "build:linux:appimage": "electron-builder --linux AppImage --publish never",
+    "build:linux:deb": "electron-builder --linux deb --publish never",
     "build:win": "electron-builder --win",
     "dist:win": "electron-builder --win --publish never",
     "build:win:zip": "electron-builder --win zip --publish never",
@@ -35,7 +38,6 @@
   "build": {
     "appId": "com.topin.companion",
     "productName": "TOPIN Companion",
-    "artifactName": "TOPIN-Companion-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "dist"
     },
@@ -68,6 +70,7 @@
         "AppImage",
         "deb"
       ],
+      "executableName": "topin-companion",
       "category": "Utility",
       "maintainer": "TOPIN <support@example.com>"
     },
