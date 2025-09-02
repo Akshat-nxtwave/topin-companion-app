@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('companion', {
   getScanStatus: () => ipcRenderer.invoke('app:getScanStatus'),
   cancelScan: () => ipcRenderer.invoke('app:cancelScan'),
   resetScan: () => ipcRenderer.invoke('app:resetScan'),
-  startAutoScan: (intervalMs) => ipcRenderer.invoke('app:autoScanStart', intervalMs),
+  // Auto-scan is started by main automatically; expose stop if needed
   stopAutoScan: () => ipcRenderer.invoke('app:autoScanStop'),
   onAutoScanResult: (handler) => {
     const listener = (_evt, payload) => handler(payload);
