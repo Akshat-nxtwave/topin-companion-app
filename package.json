@@ -34,8 +34,7 @@
   },
   "build": {
     "appId": "com.topin.companion",
-    "productName": "TOPIN Companion",
-    "artifactName": "TOPIN-Companion-${version}-${os}-${arch}.${ext}",
+    "productName": "TOPIN-Companion",
     "directories": {
       "output": "dist"
     },
