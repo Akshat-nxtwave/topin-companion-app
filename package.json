@@ -38,7 +38,7 @@
   },
   "build": {
     "appId": "com.topin.companion",
-    "productName": "TOPIN Companion",
+    "productName": "TOPIN-Companion",
     "directories": {
       "output": "dist"
     },
