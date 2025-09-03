@@ -16,7 +16,7 @@
     "pack:win": "electron-builder --win --dir",
     "dist": "electron-builder",
     "build": "yarn build:all",
-    "build:all": "dotenv -e .env electron-builder -mwl --publish=never",
+    "build:all": "electron-builder -mwl --publish=never",
     "build:linux": "electron-builder --linux",
     "build:linux:local": "electron-builder --linux --publish never",
     "build:linux:appimage": "electron-builder --linux AppImage --publish never",
