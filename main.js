@@ -1,4 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
+const { autoUpdater } = require("electron-updater");
+const UpdateSecurity = require("./update-security");
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu-vsync");
 app.commandLine.appendSwitch("log-level", "3");
@@ -23,6 +25,112 @@ const notificationService = new NotificationService();
 // Initialize EventBus and WebSocket server for communication
 const eventBus = new EventBus();
 
+// Initialize update security
+const updateSecurity = new UpdateSecurity();
+
+// Configure auto-updater with security settings
+autoUpdater.autoDownload = false; // We'll handle downloads manually for better UX
+autoUpdater.autoInstallOnAppQuit = false; // Manual installation for better control
+
+// Security: Only check for updates in production
+if (process.env.NODE_ENV !== 'development') {
+  // Check for updates on startup (but don't notify automatically)
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch(err => {
+      console.log('Update check failed (this is normal in development):', err.message);
+    });
+  }, 5000); // Wait 5 seconds after app start
+}
+
+// Auto-updater event handlers
+autoUpdater.on('checking-for-update', () => {
+  console.log('Checking for update...');
+});
+
+autoUpdater.on('update-available', (info) => {
+  console.log('Update available:', info);
+  
+  // Security validation
+  if (!updateSecurity.validateUpdateInfo(info)) {
+    console.error('Update info failed security validation');
+    updateSecurity.logSecurityEvent('update_validation_failed', { info });
+    return;
+  }
+  
+  // Check if version is actually newer
+  const pkg = require("./package.json");
+  const currentVersion = pkg.version;
+  if (!updateSecurity.isNewerVersion(currentVersion, info.version)) {
+    console.log('Update version is not newer than current version');
+    return;
+  }
+  
+  updateSecurity.logSecurityEvent('update_available', { 
+    currentVersion, 
+    newVersion: info.version 
+  });
+  
+  // Send update available event to renderer
+  if (mainWindow) {
+    mainWindow.webContents.send('update-available', info);
+  }
+});
+
+autoUpdater.on('update-not-available', (info) => {
+  console.log('Update not available:', info);
+});
+
+autoUpdater.on('error', (err) => {
+  console.error('Auto-updater error:', err);
+  
+  // Categorize errors for better user experience
+  let errorMessage = err.message;
+  let errorType = 'unknown';
+  
+  if (err.message.includes('ENOTFOUND') || err.message.includes('network')) {
+    errorType = 'network';
+    errorMessage = 'Network error: Unable to check for updates. Please check your internet connection.';
+  } else if (err.message.includes('404') || err.message.includes('not found')) {
+    errorType = 'not_found';
+    errorMessage = 'Update server not found. Please contact support.';
+  } else if (err.message.includes('permission') || err.message.includes('access')) {
+    errorType = 'permission';
+    errorMessage = 'Permission error: Unable to download update. Please run as administrator.';
+  } else if (err.message.includes('signature') || err.message.includes('verification')) {
+    errorType = 'security';
+    errorMessage = 'Security error: Update signature verification failed.';
+  }
+  
+  // Send error event to renderer with categorized information
+  if (mainWindow) {
+    mainWindow.webContents.send('update-error', {
+      message: errorMessage,
+      type: errorType,
+      originalError: err.message
+    });
+  }
+});
+
+autoUpdater.on('download-progress', (progressObj) => {
+  let log_message = "Download speed: " + progressObj.bytesPerSecond;
+  log_message = log_message + ' - Downloaded ' + progressObj.percent + '%';
+  log_message = log_message + ' (' + progressObj.transferred + "/" + progressObj.total + ')';
+  console.log(log_message);
+  
+  // Send progress to renderer
+  if (mainWindow) {
+    mainWindow.webContents.send('download-progress', progressObj);
+  }
+});
+
+autoUpdater.on('update-downloaded', (info) => {
+  console.log('Update downloaded:', info);
+  // Send update downloaded event to renderer
+  if (mainWindow) {
+    mainWindow.webContents.send('update-downloaded', info);
+  }
+});
+
 // Note: Outbound events are now emitted via EventBus with AppEvent only.
 
 // Function to analyze notification threats from audit result (similar to stepped scan)
@@ -46,7 +154,7 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
     }
     return threats;
   }
-
+  
   // macOS-only replacement flow: require Full Disk Access and DND (Focus) ON
   try {
     const isMac =
@@ -59,7 +167,7 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
       const mac = auditResult.mac || {};
       const permissionGranted = !!mac.permissionGranted;
       const focusOn = !!mac.focusOn; // true only when Do Not Disturb (default) is ON
-
+      
       if (!permissionGranted) {
         threats.push({
           type: "mac_full_disk_access_required",
@@ -109,7 +217,7 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
       }
     }
   } catch {}
-
+  
   // EXCLUDE system notifications from threat analysis as per user requirement
   // System notifications are not considered threats
   const systemProcessNameExclusions = new Set(["win32", "darwin"]);
@@ -134,7 +242,7 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
         msedge: ["msedge", "microsoft edge"],
         brave: ["brave"],
         firefox: ["firefox"],
-      }[browserKey] || [];
+    }[browserKey] || [];
     // Exclude webview/updater helpers
     const excludedSubstrings = ["webview", "edgewebview", "updater", "update"];
     for (const name of runningProcessNames) {
@@ -143,12 +251,12 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
     }
     return false;
   };
-
+  
   // Check for browser notifications enabled
   // Only consider browsers with status 'enabled' as threats, regardless of URL counts
   if (auditResult.browsers && auditResult.browsers.length > 0) {
     const enabledBrowsers = [];
-
+    
     auditResult.browsers.forEach((browser) => {
       if (browser.profiles && browser.profiles.length > 0) {
         // Only profiles with status 'enabled' are threats - ignore allowed/blocked URL counts
@@ -175,7 +283,7 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
         }
       }
     });
-
+    
     if (enabledBrowsers.length > 0) {
       threats.push({
         type: "browser_notifications_enabled",
@@ -193,13 +301,13 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
       });
     }
   }
-
+  
   // Check for notification-enabled applications/processes
   if (auditResult.processes && auditResult.processes.length > 0) {
     const enabledApps = auditResult.processes.filter(
       (proc) => proc.notifEnabled && !isProcessNameExcluded(proc.name)
     );
-
+    
     if (enabledApps.length > 0) {
       threats.push({
         type: "notification_apps_enabled",
@@ -217,7 +325,7 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
       });
     }
   }
-
+  
   return threats;
 }
 
@@ -255,7 +363,7 @@ class LoggingLocalServer extends LocalServer {
                   response = steppedScanManager.resetScan();
                   break;
                 default:
-                  response = {
+                  response = { 
                     ok: false,
                     error: `Unknown command: ${message.action}`,
                   };
@@ -264,8 +372,8 @@ class LoggingLocalServer extends LocalServer {
                 ws.send(
                   JSON.stringify({
                     type: "command_response",
-                    originalCommand: message.action,
-                    result: response,
+                  originalCommand: message.action,
+                  result: response,
                     timestamp: Date.now(),
                   })
                 );
@@ -415,13 +523,13 @@ async function getFallbackProcessesPOSIX() {
       "ps axo pid,ppid,pcpu,pmem,comm,command --no-headers",
       { timeout: 3000 },
       (err, stdout) => {
-        if (err || !stdout) return resolve([]);
+      if (err || !stdout) return resolve([]);
         const rows = stdout.trim().split("\n");
-        const procs = [];
-        for (const line of rows) {
-          const parts = line.trim().split(/\s+/);
-          if (parts.length < 6) continue;
-          const [pid, ppid, pcpu, pmem, comm, ...cmdParts] = parts;
+      const procs = [];
+      for (const line of rows) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 6) continue;
+        const [pid, ppid, pcpu, pmem, comm, ...cmdParts] = parts;
           const command = cmdParts.join(" ");
           procs.push({
             pid: parseInt(pid) || 0,
@@ -431,8 +539,8 @@ async function getFallbackProcessesPOSIX() {
             name: comm || "unknown",
             command,
           });
-        }
-        resolve(procs);
+      }
+      resolve(procs);
       }
     );
   });
@@ -446,7 +554,7 @@ async function scanSystem() {
       si.processes().catch((err) => {
         console.warn("systeminformation.processes() failed:", err);
         return { list: [] };
-      }),
+      }), 
       si.currentLoad().catch((err) => {
         console.warn("systeminformation.currentLoad() failed:", err);
         return { currentLoad: 0 };
@@ -506,7 +614,7 @@ ipcMain.handle("app:auditNotifications", async (_evt, _providedScanId) => {
     const scanId = Date.now();
     const audit = await notificationService.auditNotifications();
     const notificationThreats = analyzeNotificationThreatsFromAudit(audit);
-
+    
     // Rule 1: If DND is not active on any OS → emit ACTIVE_NOTIFICATION_SERVICE
     const sys = audit.system || {};
     const dndOn = String(sys.status || "").toLowerCase() === "disabled"; // disabled => DND ON
@@ -536,16 +644,16 @@ ipcMain.handle("app:auditNotifications", async (_evt, _providedScanId) => {
       ) {
         try {
           eventBus.emitEvent(AppEvent.NO_ISSUES_DETECTED, {
-            scanId: Date.now(),
+          scanId: Date.now(),
             flow: "sequential_checks",
-          });
+        });
         } catch {}
         clearSequentialCompletion();
       } else {
         armSequentialCompletionExpiry();
       }
     }
-
+    
     // Include threats in return payload for renderer consumption
     return { ok: true, threats: notificationThreats, ...audit };
   } catch (e) {
@@ -581,7 +689,7 @@ class SteppedScanManager {
     console.log("🚀 startSteppedScan() method called");
     console.log(`🚀 Current scan state: ${this.scanState}`);
     console.log(`🚀 Current scan:`, this.currentScan);
-
+    
     // Allow restarting if scan is blocked or completed
     if (
       this.currentScan &&
@@ -606,7 +714,7 @@ class SteppedScanManager {
 
     console.log("🔍 Starting new stepped scan - Step 1: Notification Audit");
     console.log(`🔍 Scan ID: ${this.currentScan.id}`);
-
+    
     // Emit scan started event for internal use
     eventBus.emitStage("STEPPED_SCAN_STARTED", {
       scanId: this.currentScan.id,
@@ -620,7 +728,7 @@ class SteppedScanManager {
   async executeStep1() {
     try {
       console.log("📱 Auditing notification settings...");
-
+      
       const auditResult = await notificationService.auditNotifications();
       const notificationThreats = analyzeNotificationThreatsFromAudit(auditResult);
       this.detections.notifications = Array.isArray(notificationThreats)
@@ -696,7 +804,7 @@ class SteppedScanManager {
       this.currentScan.currentStep = 2;
 
       console.log("🔍 Starting Step 2: Security and Threat Scan");
-
+      
       eventBus.emitStage("SCAN_STEP2_STARTED", {
         scanId: this.currentScan.id,
         step: 2,
@@ -704,8 +812,8 @@ class SteppedScanManager {
       });
 
       const systemReport = await scanSystem();
-      const securityThreats = await securityService.runAllChecks({
-        processNames: maliciousSignatures.processNames,
+      const securityThreats = await securityService.runAllChecks({ 
+        processNames: maliciousSignatures.processNames, 
         ports: maliciousSignatures.ports.map((p) => Number(p)),
         domains: maliciousSignatures.domains,
       });
@@ -738,7 +846,7 @@ class SteppedScanManager {
         };
       } else {
         console.log("✅ No security threats detected");
-
+        
         return this.completeScan(systemReport);
       }
     } catch (e) {
@@ -752,14 +860,14 @@ class SteppedScanManager {
     if (this.scanState !== "step1_blocked") {
       return { ok: false, error: "Cannot retry step 1 - not in blocked state" };
     }
-
+    
     console.log("🔄 User initiated retry of Step 1: Notification Audit");
     console.log("⚠️ Verifying if notification issues have been resolved...");
-
+    
     // Reset current scan step but keep the scan ID
     this.currentScan.currentStep = 1;
     this.scanState = "step1_notification";
-
+    
     return this.executeStep1();
   }
 
@@ -767,7 +875,7 @@ class SteppedScanManager {
     if (this.scanState !== "step2_blocked") {
       return { ok: false, error: "Cannot retry step 2 - not in blocked state" };
     }
-
+    
     console.log("🔄 Retrying Step 2: Security Scan");
     return this.executeStep2();
   }
@@ -775,7 +883,7 @@ class SteppedScanManager {
   async completeScan(systemReport = null) {
     this.scanState = "completed";
     const endTime = Date.now();
-
+    
     const finalReport = {
       scanId: this.currentScan.id,
       startTime: this.currentScan.startTime,
@@ -795,9 +903,9 @@ class SteppedScanManager {
 
     try {
       eventBus.emitEvent(AppEvent.NO_ISSUES_DETECTED, {
-        scanId: finalReport.scanId,
-        duration: finalReport.duration,
-        summary: finalReport.summary,
+      scanId: finalReport.scanId,
+      duration: finalReport.duration,
+      summary: finalReport.summary,
       });
     } catch {}
 
@@ -805,7 +913,7 @@ class SteppedScanManager {
 
     console.log("✅ Stepped scan completed successfully");
     this.currentScan = null;
-
+    
     return {
       ok: true,
       status: "completed",
@@ -837,7 +945,7 @@ class SteppedScanManager {
     this.currentScan = null;
     this.scanState = "idle";
     this.detections = { notifications: [], security: [] };
-
+    
     eventBus.emitStage("SCAN_RESET", {
       message: "Scan state has been reset",
       timestamp: Date.now(),
@@ -853,11 +961,11 @@ class SteppedScanManager {
         reason: "user_cancelled",
       });
     }
-
+    
     this.currentScan = null;
     this.scanState = "idle";
     this.detections = { notifications: [], security: [] };
-
+    
     return { ok: true, message: "Scan cancelled" };
   }
 }
@@ -886,17 +994,17 @@ async function legacyScan(options = {}) {
     console.log("🔍 Running legacy scan (for UI compatibility)");
 
     // No outbound events here; EventBus-only policy
-
+    
     const systemReport = await scanSystem();
-    const threats = await securityService.runAllChecks({
-      processNames: maliciousSignatures.processNames,
+    const threats = await securityService.runAllChecks({ 
+      processNames: maliciousSignatures.processNames, 
       ports: maliciousSignatures.ports.map((p) => Number(p)),
       domains: maliciousSignatures.domains,
     });
-
+    
     // Ensure threats is always an array
     systemReport.threats = Array.isArray(threats) ? threats : [];
-
+    
     // No outbound events here; EventBus-only policy
 
     console.log(
@@ -913,15 +1021,15 @@ async function legacyScan(options = {}) {
 async function completeSystemCheck() {
   try {
     const scanId = Date.now();
-
+    
     // No outbound events at start
-
+    
     // Step 1: Notification audit
     const notificationResult = await notificationService.auditNotifications();
     const notificationThreats =
       analyzeNotificationThreatsFromAudit(notificationResult);
     const hasNotificationThreats = notificationThreats.length > 0;
-
+    
     // Emit ACTIVE_NOTIFICATION_SERVICE only when threats present
     if (hasNotificationThreats) {
       try {
@@ -931,11 +1039,11 @@ async function completeSystemCheck() {
         });
       } catch {}
     }
-
+    
     // Step 2: Security scan (skip events - we'll send them ourselves)
-    const securityResult = await legacyScan({
-      skipEvents: true,
-      scanId: scanId,
+    const securityResult = await legacyScan({ 
+      skipEvents: true, 
+      scanId: scanId, 
       scanType: "complete_system_check",
     });
     const securityOk = !!(securityResult && securityResult.ok);
@@ -945,7 +1053,7 @@ async function completeSystemCheck() {
       securityResult.report.threats.length > 0;
 
     // No outbound events for security threats in this flow per allowed policy
-
+    
     // Send SYSTEM_CHECK_SUCCESSFUL only if both completion events were sent
     const sentNotificationComplete = !hasNotificationThreats;
     const sentSuspiciousComplete = securityOk && !hasSecurityThreats;
@@ -957,7 +1065,7 @@ async function completeSystemCheck() {
         });
       } catch {}
     }
-
+    
     // Return combined results
     return {
       ok: true,
@@ -1025,9 +1133,9 @@ ipcMain.handle("app:scan", async (_evt, _providedScanId) => {
         ) {
           try {
             eventBus.emitEvent(AppEvent.NO_ISSUES_DETECTED, {
-              scanId: Date.now(),
+            scanId: Date.now(),
               flow: "sequential_checks",
-            });
+          });
           } catch {}
           clearSequentialCompletion();
         } else {
@@ -1095,7 +1203,7 @@ function startAutoScanWorker(intervalMs = 30000) {
       if (msg.payload && msg.payload.ok && msg.payload.report) {
         // Intentionally no-op for outbound events here
       }
-
+      
       // Send result to renderer process
       if (mainWindow && !mainWindow.isDestroyed()) {
         try {
@@ -1114,7 +1222,7 @@ function startAutoScanWorker(intervalMs = 30000) {
     type: "start",
     intervalMs,
     signatures: {
-      processNames: maliciousSignatures.processNames,
+    processNames: maliciousSignatures.processNames,
       ports: maliciousSignatures.ports.map((p) => Number(p)),
       domains: maliciousSignatures.domains,
     },
@@ -1167,7 +1275,7 @@ ipcMain.handle("app:getServerStatus", async () => {
     port: localServer.port,
     endpoint: `ws://localhost:${localServer.port}/ws`,
   };
-});
+}); 
 
 // Permission preflight for browser tab access
 ipcMain.handle("app:checkBrowserTabPermissions", async () => {
@@ -1243,6 +1351,82 @@ ipcMain.handle("app:listActiveSharingTabs", async () => {
   }
 });
 
+// Auto-updater IPC handlers
+ipcMain.handle("app:checkForUpdates", async () => {
+  try {
+    // Security check: Only allow in production or when explicitly requested
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Update check skipped in development mode');
+      return { success: false, error: 'Update checks disabled in development mode' };
+    }
+    
+    const result = await autoUpdater.checkForUpdates();
+    return { success: true, result };
+  } catch (error) {
+    console.error('Error checking for updates:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("app:downloadUpdate", async () => {
+  try {
+    // Validate that an update is available before downloading
+    const updateInfo = autoUpdater.updateInfo;
+    if (!updateInfo) {
+      return { success: false, error: 'No update available to download' };
+    }
+    
+    // Security: Validate update info
+    if (!updateInfo.version || !updateInfo.files || updateInfo.files.length === 0) {
+      return { success: false, error: 'Invalid update information' };
+    }
+    
+    await autoUpdater.downloadUpdate();
+    return { success: true };
+  } catch (error) {
+    console.error('Error downloading update:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("app:installUpdate", async () => {
+  try {
+    // Validate that update is downloaded before installing
+    if (!autoUpdater.updateDownloaded) {
+      return { success: false, error: 'No update downloaded to install' };
+    }
+    
+    // Security: Final validation before installation
+    const updateInfo = autoUpdater.updateInfo;
+    if (!updateInfo || !updateInfo.version) {
+      return { success: false, error: 'Invalid update information for installation' };
+    }
+    
+    // Log installation attempt for security audit
+    console.log(`Installing update to version ${updateInfo.version}`);
+    
+    autoUpdater.quitAndInstall();
+    return { success: true };
+  } catch (error) {
+    console.error('Error installing update:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("app:getAppVersion", async () => {
+  try {
+    const pkg = require("./package.json");
+    return { 
+      version: pkg.version,
+      name: pkg.name,
+      description: pkg.description
+    };
+  } catch (error) {
+    console.error('Error getting app version:', error);
+    return { success: false, error: error.message };
+  }
+});
+
 // Exam mode: allow only one browser family and the companion app; flag the rest
 ipcMain.handle("app:runExamModeCheck", async (_evt, options) => {
   try {
@@ -1270,7 +1454,7 @@ ipcMain.handle("app:runExamModeCheck", async (_evt, options) => {
         })),
         securityService
           .runAllChecks({
-            processNames: maliciousSignatures.processNames,
+          processNames: maliciousSignatures.processNames,
             ports: maliciousSignatures.ports.map((p) => Number(p)),
             domains: maliciousSignatures.domains,
           })

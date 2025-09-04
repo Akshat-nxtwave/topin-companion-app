@@ -269,4 +269,226 @@ window.addEventListener('beforeunload', () => {
   try { if (unsubscribeAutoScan) unsubscribeAutoScan(); } catch {}
   try { window.companion.stopAutoScan(); } catch {}
   unsubscribeAutoScan = null;
+});
+
+// Auto-updater functionality
+let currentAppVersion = '';
+let updateInfo = null;
+let updateEventListeners = [];
+
+// Initialize update functionality
+async function initUpdateSystem() {
+  try {
+    // Get current app version
+    const versionInfo = await window.companion.getAppVersion();
+    currentAppVersion = versionInfo.version;
+    
+    // Set up update event listeners
+    updateEventListeners.push(
+      window.companion.onUpdateAvailable((info) => {
+        updateInfo = info;
+        showUpdateAvailable();
+      })
+    );
+    
+    updateEventListeners.push(
+      window.companion.onUpdateDownloaded((info) => {
+        showUpdateDownloaded();
+      })
+    );
+    
+    updateEventListeners.push(
+      window.companion.onDownloadProgress((progressObj) => {
+        updateDownloadProgress(progressObj);
+      })
+    );
+    
+    updateEventListeners.push(
+      window.companion.onUpdateError((error) => {
+        showUpdateError(error);
+      })
+    );
+    
+    // Set up modal event listeners
+    setupUpdateModalEvents();
+    
+  } catch (error) {
+    console.error('Failed to initialize update system:', error);
+  }
+}
+
+function setupUpdateModalEvents() {
+  const modal = document.getElementById('updateModal');
+  const closeBtn = document.getElementById('closeUpdateModal');
+  const downloadBtn = document.getElementById('downloadUpdateBtn');
+  const installBtn = document.getElementById('installUpdateBtn');
+  const skipBtn = document.getElementById('skipUpdateBtn');
+  const remindLaterBtn = document.getElementById('remindLaterBtn');
+  
+  // Close modal
+  closeBtn?.addEventListener('click', hideUpdateModal);
+  remindLaterBtn?.addEventListener('click', hideUpdateModal);
+  
+  // Download update
+  downloadBtn?.addEventListener('click', async () => {
+    try {
+      downloadBtn.disabled = true;
+      downloadBtn.textContent = 'Downloading...';
+      document.getElementById('downloadProgress').style.display = 'block';
+      
+      const result = await window.companion.downloadUpdate();
+      if (!result.success) {
+        throw new Error(result.error);
+      }
+    } catch (error) {
+      showUpdateError(error.message);
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = 'Download Update';
+      document.getElementById('downloadProgress').style.display = 'none';
+    }
+  });
+  
+  // Install update
+  installBtn?.addEventListener('click', async () => {
+    try {
+      installBtn.disabled = true;
+      installBtn.textContent = 'Installing...';
+      
+      const result = await window.companion.installUpdate();
+      if (!result.success) {
+        throw new Error(result.error);
+      }
+    } catch (error) {
+      showUpdateError(error.message);
+      installBtn.disabled = false;
+      installBtn.textContent = 'Install & Restart';
+    }
+  });
+  
+  // Skip update
+  skipBtn?.addEventListener('click', () => {
+    hideUpdateModal();
+    // Could store skipped version in localStorage
+  });
+  
+  // Close modal when clicking outside
+  modal?.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      hideUpdateModal();
+    }
+  });
+}
+
+function showUpdateAvailable() {
+  const updateBadge = document.getElementById('updateBadge');
+  const modal = document.getElementById('updateModal');
+  const currentVersionEl = document.getElementById('currentVersion');
+  const newVersionEl = document.getElementById('newVersion');
+  const releaseNotesEl = document.getElementById('releaseNotes');
+  
+  // Show update badge
+  if (updateBadge) {
+    updateBadge.style.display = 'inline-block';
+  }
+  
+  // Update modal content
+  if (currentVersionEl) currentVersionEl.textContent = currentAppVersion;
+  if (newVersionEl) newVersionEl.textContent = updateInfo?.version || 'Unknown';
+  if (releaseNotesEl) {
+    releaseNotesEl.textContent = updateInfo?.releaseNotes || 'No release notes available.';
+  }
+  
+  // Show modal
+  if (modal) {
+    modal.style.display = 'flex';
+  }
+}
+
+function showUpdateDownloaded() {
+  const downloadBtn = document.getElementById('downloadUpdateBtn');
+  const installBtn = document.getElementById('installUpdateBtn');
+  const downloadProgress = document.getElementById('downloadProgress');
+  
+  // Hide download progress
+  if (downloadProgress) {
+    downloadProgress.style.display = 'none';
+  }
+  
+  // Show install button
+  if (downloadBtn) downloadBtn.style.display = 'none';
+  if (installBtn) installBtn.style.display = 'inline-block';
+}
+
+function updateDownloadProgress(progressObj) {
+  const progressFill = document.getElementById('progressFill');
+  const progressText = document.getElementById('progressText');
+  
+  if (progressFill) {
+    progressFill.style.width = `${progressObj.percent}%`;
+  }
+  
+  if (progressText) {
+    const speed = formatBytes(progressObj.bytesPerSecond);
+    const downloaded = formatBytes(progressObj.transferred);
+    const total = formatBytes(progressObj.total);
+    progressText.textContent = `Downloading... ${downloaded} / ${total} (${speed}/s)`;
+  }
+}
+
+function showUpdateError(error) {
+  const errorEl = document.getElementById('updateError');
+  if (errorEl) {
+    let errorMessage = error;
+    
+    // Handle enhanced error objects
+    if (typeof error === 'object' && error.message) {
+      errorMessage = error.message;
+      
+      // Add specific styling based on error type
+      if (error.type === 'network') {
+        errorEl.style.background = 'rgba(255, 193, 7, 0.1)';
+        errorEl.style.borderColor = 'rgba(255, 193, 7, 0.3)';
+        errorEl.style.color = '#ffc107';
+      } else if (error.type === 'security') {
+        errorEl.style.background = 'rgba(220, 53, 69, 0.1)';
+        errorEl.style.borderColor = 'rgba(220, 53, 69, 0.3)';
+        errorEl.style.color = '#dc3545';
+      } else if (error.type === 'permission') {
+        errorEl.style.background = 'rgba(255, 107, 107, 0.1)';
+        errorEl.style.borderColor = 'rgba(255, 107, 107, 0.3)';
+        errorEl.style.color = '#ff6b6b';
+      }
+    }
+    
+    errorEl.textContent = `Update error: ${errorMessage}`;
+    errorEl.style.display = 'block';
+  }
+}
+
+function hideUpdateModal() {
+  const modal = document.getElementById('updateModal');
+  if (modal) {
+    modal.style.display = 'none';
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+// Initialize update system when DOM is loaded
+document.addEventListener('DOMContentLoaded', () => {
+  initUpdateSystem();
+});
+
+// Clean up event listeners on page unload
+window.addEventListener('beforeunload', () => {
+  updateEventListeners.forEach(cleanup => {
+    try { cleanup(); } catch {}
+  });
+  updateEventListeners = [];
 }); 

@@ -25,15 +25,20 @@
     "dist:win": "electron-builder --win --publish never",
     "build:win:zip": "electron-builder --win zip --publish never",
     "build:mac": "dotenv -e .env electron-builder --mac --publish=never",
+    "publish:all": "electron-builder -mwl --publish always",
+    "publish:linux": "electron-builder --linux --publish always",
+    "publish:win": "electron-builder --win --publish always",
+    "publish:mac": "dotenv -e .env electron-builder --mac --publish always",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "electron-updater": "6.6.2",
     "systeminformation": "^5.21.23",
     "ws": "^8.17.0"
   },
   "devDependencies": {
-    "electron": "31",
     "dotenv-cli": "^10.0.0",
+    "electron": "31",
     "electron-builder": "^24.13.3"
   },
   "build": {
@@ -41,6 +46,15 @@
     "productName": "TOPIN-Companion",
     "directories": {
       "output": "dist"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Akshat-nxtwave",
+      "repo": "topin-companion-app"
+    },
+    "updater": {
+      "url": "https://github.com/Akshat-nxtwave/topin-companion-app/releases/latest/download/",
+      "channel": "latest"
     },
     "asar": true,
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
@@ -73,13 +87,19 @@
       ],
       "executableName": "topin-companion",
       "category": "Utility",
-      "maintainer": "TOPIN <support@example.com>"
+      "maintainer": "TOPIN <support@example.com>",
+      "publish": {
+        "provider": "github"
+      }
     },
     "win": {
       "target": [
         "nsis",
         "zip"
-      ]
+      ],
+      "publish": {
+        "provider": "github"
+      }
     },
     "nsis": {
       "oneClick": true,
@@ -100,6 +120,9 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "gatekeeperAssess": false,
+      "publish": {
+        "provider": "github"
+      },
       "extendInfo": {
         "NSAppleEventsUsageDescription": "This app uses Apple Events to open system settings for permissions.",
         "LSApplicationCategoryType": "public.app-category.utilities"

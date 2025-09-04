@@ -38,6 +38,35 @@ contextBridge.exposeInMainWorld('companion', {
   getLoggingStatus: () => ipcRenderer.invoke('app:getLoggingStatus'),
   getActiveSharingTabs: () => ipcRenderer.invoke('app:listActiveSharingTabs'),
   runExamModeCheck: (options) => ipcRenderer.invoke('app:runExamModeCheck', options),
+  
+  // Auto-updater functions
+  checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
+  downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
+  installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
+  getAppVersion: () => ipcRenderer.invoke('app:getAppVersion'),
+  
+  // Auto-updater event listeners
+  onUpdateAvailable: (handler) => {
+    const listener = (_evt, info) => handler(info);
+    ipcRenderer.on('update-available', listener);
+    return () => { ipcRenderer.removeListener('update-available', listener); };
+  },
+  onUpdateDownloaded: (handler) => {
+    const listener = (_evt, info) => handler(info);
+    ipcRenderer.on('update-downloaded', listener);
+    return () => { ipcRenderer.removeListener('update-downloaded', listener); };
+  },
+  onDownloadProgress: (handler) => {
+    const listener = (_evt, progressObj) => handler(progressObj);
+    ipcRenderer.on('download-progress', listener);
+    return () => { ipcRenderer.removeListener('download-progress', listener); };
+  },
+  onUpdateError: (handler) => {
+    const listener = (_evt, error) => handler(error);
+    ipcRenderer.on('update-error', listener);
+    return () => { ipcRenderer.removeListener('update-error', listener); };
+  },
+  
   onWebSocketMessage: (handler) => {
     const listener = (_evt, message) => handler(message);
     ipcRenderer.on('websocket:message', listener);
