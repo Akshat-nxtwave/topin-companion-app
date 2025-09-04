@@ -52,10 +52,6 @@
       "owner": "Akshat-nxtwave",
       "repo": "topin-companion-app"
     },
-    "updater": {
-      "url": "https://github.com/Akshat-nxtwave/topin-companion-app/releases/latest/download/",
-      "channel": "latest"
-    },
     "asar": true,
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [

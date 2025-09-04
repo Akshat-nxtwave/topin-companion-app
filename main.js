@@ -29,8 +29,8 @@ const eventBus = new EventBus();
 const updateSecurity = new UpdateSecurity();
 
 // Configure auto-updater with security settings
-autoUpdater.autoDownload = false; // We'll handle downloads manually for better UX
-autoUpdater.autoInstallOnAppQuit = false; // Manual installation for better control
+autoUpdater.autoDownload = false; // This will handle downloads manually for better UX
+autoUpdater.autoInstallOnAppQuit = false; // This will handle manual installation for better control
 
 // Security: Only check for updates in production
 if (process.env.NODE_ENV !== 'development') {
