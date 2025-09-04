@@ -25,11 +25,21 @@ jobs:
           
       - name: Install dependencies
         run: yarn install --frozen-lockfile
-        
-      - name: Build application
-        run: yarn build:all
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Linux build
+      - name: Build Linux app
+        if: matrix.os == 'ubuntu-latest'
+        run: yarn electron-builder --linux --publish=never
+
+      # Windows build
+      - name: Build Windows app
+        if: matrix.os == 'windows-latest'
+        run: yarn electron-builder --windows --publish=never
+
+      # macOS build
+      - name: Build macOS app
+        if: matrix.os == 'macos-latest'
+        run: yarn electron-builder --mac --publish=never
           
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -63,3 +73,9 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TOPIN-Companion-${{ matrix.os }}
+          path: dist/**
