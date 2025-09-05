@@ -13,7 +13,6 @@
     </div>
     <div class="actions">
       <span id="autoScanBadge" class="badge" title="Auto-scan starts automatically and runs periodically" style="margin-right:8px;opacity:.85">Auto-scan: ON</span>
-      <span id="updateBadge" class="badge" style="margin-right:8px;display:none;background:#1a4d3a;color:#4ade80" title="Update available">Update Available</span>
       <button id="scanBtn" class="btn primary">Run Scan</button>
     </div>
   </header>
@@ -24,6 +23,7 @@
       <div id="globalStatus" class="badge">Idle</div>
       <p class="muted" id="globalHint">Click Scan Now to run notifications check and system scan.</p>
     </section>
+
 
     <section class="card">
       <h2>Details</h2>
@@ -42,37 +42,6 @@
     </section>
   </main>
 
-  <!-- Update Modal -->
-  <div id="updateModal" class="modal" style="display: none;">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h2>Update Available</h2>
-        <button id="closeUpdateModal" class="btn-close">&times;</button>
-      </div>
-      <div class="modal-body">
-        <p>A new version of TOPIN Companion is available!</p>
-        <div id="updateInfo" class="update-info">
-          <p><strong>Current Version:</strong> <span id="currentVersion">-</span></p>
-          <p><strong>New Version:</strong> <span id="newVersion">-</span></p>
-          <p><strong>Release Notes:</strong></p>
-          <div id="releaseNotes" class="release-notes"></div>
-        </div>
-        <div id="downloadProgress" class="download-progress" style="display: none;">
-          <div class="progress-bar">
-            <div id="progressFill" class="progress-fill"></div>
-          </div>
-          <p id="progressText">Downloading update...</p>
-        </div>
-        <div id="updateError" class="error-message" style="display: none;"></div>
-      </div>
-      <div class="modal-footer">
-        <button id="downloadUpdateBtn" class="btn primary">Download Update</button>
-        <button id="installUpdateBtn" class="btn primary" style="display: none;">Install & Restart</button>
-        <button id="skipUpdateBtn" class="btn secondary">Skip This Version</button>
-        <button id="remindLaterBtn" class="btn secondary">Remind Me Later</button>
-      </div>
-    </div>
-  </div>
 
   <script src="renderer.js"></script>
 </body>

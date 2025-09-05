@@ -51,7 +51,7 @@ console.log(`📦 Repository: ${githubOwner}/${githubRepo}`);
 // Update package.json with correct GitHub info
 packageJson.build.publish.owner = githubOwner;
 packageJson.build.publish.repo = githubRepo;
-packageJson.build.updater.url = `https://github.com/${githubOwner}/${githubRepo}/releases/latest/download/`;
+packageJson.build.updater.url = `https://github.com/${githubOwner}/${githubRepo}/releases/`;
 
 // Write updated package.json
 fs.writeFileSync(packagePath, JSON.stringify(packageJson, null, 2));

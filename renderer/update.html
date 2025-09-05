@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TOPIN Companion - Updates</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="title">
+      <h1>TOPIN Companion</h1>
+    </div>
+    <div class="actions">
+      <span class="badge" style="background:#1e3a8a;color:#60a5fa">Update Check</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <h2>Checking for Updates</h2>
+      <div class="update-status">
+        <div class="update-icon">
+          <div class="spinner"></div>
+        </div>
+        <div class="update-info">
+          <h3 id="updateStatus">Checking for updates...</h3>
+          <p id="updateMessage">Please wait while we check for the latest version.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="updateDetails" style="display: none;">
+      <h2>Update Information</h2>
+      <div class="update-details">
+        <div class="version-info">
+          <div class="version-item">
+            <span class="label">Current Version:</span>
+            <span id="currentVersion" class="badge">Loading...</span>
+          </div>
+          <div class="version-item">
+            <span class="label">Latest Version:</span>
+            <span id="latestVersion" class="badge">Loading...</span>
+          </div>
+        </div>
+        <div id="releaseNotes" class="release-notes" style="display: none;">
+          <h4>Release Notes:</h4>
+          <div id="releaseNotesContent"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="updateActions" style="display: none;">
+      <h2>Update Actions</h2>
+      <div class="update-actions">
+        <button id="downloadUpdateBtn" class="btn primary" style="display: none;">Download Update</button>
+        <button id="installUpdateBtn" class="btn primary" style="display: none;">Install & Restart</button>
+        <button id="skipUpdateBtn" class="btn secondary" style="display: none;">Skip This Version</button>
+        <button id="continueBtn" class="btn primary" style="display: none;">Continue to App</button>
+      </div>
+      <div id="downloadProgress" class="download-progress" style="display: none;">
+        <div class="progress-bar">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+        <p id="progressText">Downloading update...</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Update Modal -->
+  <div id="updateModal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Update Available</h2>
+        <button id="closeUpdateModal" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>A new version of TOPIN Companion is available!</p>
+        <div id="updateInfo" class="update-info">
+          <p><strong>Current Version:</strong> <span id="currentVersionModal">-</span></p>
+          <p><strong>New Version:</strong> <span id="newVersionModal">-</span></p>
+          <p><strong>Release Notes:</strong></p>
+          <div id="releaseNotesModal" class="release-notes"></div>
+        </div>
+        <div id="downloadProgressModal" class="download-progress" style="display: none;">
+          <div class="progress-bar">
+            <div id="progressFillModal" class="progress-fill"></div>
+          </div>
+          <p id="progressTextModal">Downloading update...</p>
+        </div>
+        <div id="updateErrorModal" class="error-message" style="display: none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="downloadUpdateBtnModal" class="btn primary">Download Update</button>
+        <button id="installUpdateBtnModal" class="btn primary" style="display: none;">Install & Restart</button>
+        <button id="skipUpdateBtnModal" class="btn secondary">Skip This Version</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Error Modal -->
+  <div id="errorModal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Update Error</h2>
+        <button id="closeErrorModal" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="errorMessage">An error occurred while checking for updates.</p>
+        <p class="muted">The application will continue with the current version.</p>
+      </div>
+      <div class="modal-footer">
+        <button id="continueErrorBtn" class="btn primary">Continue to App</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Restart Modal -->
+  <div id="restartModal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Update Installed</h2>
+      </div>
+      <div class="modal-body">
+        <p>The update has been installed successfully.</p>
+        <p class="muted">Please quit and reopen the application to use the new version.</p>
+      </div>
+      <div class="modal-footer">
+        <button id="quitAppBtn" class="btn primary">Quit Application</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="update.js"></script>
+</body>
+</html>

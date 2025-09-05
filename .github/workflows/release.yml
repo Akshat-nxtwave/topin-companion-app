@@ -72,6 +72,7 @@ jobs:
             dist/**/*.AppImage
             dist/**/*.deb
             dist/**/*.zip
+            dist/**/*.yml
           draft: false
           prerelease: false
         env:

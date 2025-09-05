@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('companion', {
   downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
   installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
   getAppVersion: () => ipcRenderer.invoke('app:getAppVersion'),
+  isDevelopment: () => ipcRenderer.invoke('app:isDevelopment'),
   
   // Auto-updater event listeners
   onUpdateAvailable: (handler) => {
@@ -65,6 +66,11 @@ contextBridge.exposeInMainWorld('companion', {
     const listener = (_evt, error) => handler(error);
     ipcRenderer.on('update-error', listener);
     return () => { ipcRenderer.removeListener('update-error', listener); };
+  },
+  onUpdateNotAvailable: (handler) => {
+    const listener = (_evt, info) => handler(info);
+    ipcRenderer.on('update-not-available', listener);
+    return () => { ipcRenderer.removeListener('update-not-available', listener); };
   },
   
   onWebSocketMessage: (handler) => {

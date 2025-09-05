@@ -37,9 +37,14 @@ if (process.env.NODE_ENV !== 'development') {
   // Check for updates on startup (but don't notify automatically)
   setTimeout(() => {
     autoUpdater.checkForUpdates().catch(err => {
-      console.log('Update check failed (this is normal in development):', err.message);
+      // Only log in development if it's not the expected "not packed" error
+      if (!err.message.includes('not packed') && !err.message.includes('dev update config')) {
+        console.log('Update check failed:', err.message);
+      }
     });
   }, 5000); // Wait 5 seconds after app start
+} else {
+  console.log('🔧 Development mode: Update checks disabled');
 }
 
 // Auto-updater event handlers
@@ -412,7 +417,7 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  mainWindow.loadFile(path.join(__dirname, "renderer", "update.html"));
 
   // Debug helper: open DevTools automatically if env var set
   if (process.env.TOPIN_OPEN_DEVTOOLS === "1") {
@@ -1425,6 +1430,10 @@ ipcMain.handle("app:getAppVersion", async () => {
     console.error('Error getting app version:', error);
     return { success: false, error: error.message };
   }
+});
+
+ipcMain.handle("app:isDevelopment", async () => {
+  return process.env.NODE_ENV === 'development' || !app.isPackaged;
 });
 
 // Exam mode: allow only one browser family and the companion app; flag the rest
