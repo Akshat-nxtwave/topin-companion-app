@@ -32,6 +32,13 @@ const updateSecurity = new UpdateSecurity();
 autoUpdater.autoDownload = false; // This will handle downloads manually for better UX
 autoUpdater.autoInstallOnAppQuit = false; // This will handle manual installation for better control
 
+// Set the update feed URL for GitHub releases
+autoUpdater.setFeedURL({
+  provider: 'github',
+  owner: 'Akshat-nxtwave',
+  repo: 'topin-companion-app'
+});
+
 // Security: Only check for updates in production
 if (process.env.NODE_ENV !== 'development') {
   // Check for updates on startup (but don't notify automatically)
