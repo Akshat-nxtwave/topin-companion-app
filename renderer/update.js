@@ -8,9 +8,13 @@ let isCheckingForUpdates = false;
 // Initialize update system
 async function initUpdateSystem() {
   try {
+    console.log('🚀 Initializing update system...');
+    
     // Get current app version
+    console.log('📦 Getting app version...');
     const versionInfo = await window.companion.getAppVersion();
     currentAppVersion = versionInfo.version;
+    console.log('📦 Current app version:', currentAppVersion);
     
     // Update UI with current version
     const currentVersionEl = document.getElementById('currentVersion');
@@ -25,17 +29,21 @@ async function initUpdateSystem() {
     setupUpdateModalEvents();
     
     // Start checking for updates
+    console.log('🔍 Starting update check...');
     await checkForUpdates();
     
   } catch (error) {
-    console.error('Failed to initialize update system:', error);
+    console.error('❌ Failed to initialize update system:', error);
     showError('Failed to initialize update system: ' + error.message);
   }
 }
 
 function setupUpdateEventListeners() {
+  console.log('🔧 Setting up update event listeners...');
+  
   updateEventListeners.push(
     window.companion.onUpdateAvailable((info) => {
+      console.log('✅ Update available event received:', info);
       updateInfo = info;
       showUpdateAvailable();
     })
@@ -43,27 +51,33 @@ function setupUpdateEventListeners() {
   
   updateEventListeners.push(
     window.companion.onUpdateDownloaded((info) => {
+      console.log('📥 Update downloaded event received:', info);
       showUpdateDownloaded();
     })
   );
   
   updateEventListeners.push(
     window.companion.onDownloadProgress((progressObj) => {
+      console.log('📊 Download progress:', progressObj.percent + '%');
       updateDownloadProgress(progressObj);
     })
   );
   
   updateEventListeners.push(
     window.companion.onUpdateError((error) => {
+      console.log('❌ Update error event received:', error);
       showUpdateError(error);
     })
   );
   
   updateEventListeners.push(
-    window.companion.onUpdateNotAvailable(() => {
+    window.companion.onUpdateNotAvailable((info) => {
+      console.log('ℹ️ Update not available event received:', info);
       showUpdateNotAvailable();
     })
   );
+  
+  console.log('✅ Update event listeners set up successfully');
 }
 
 function setupUpdateModalEvents() {
@@ -79,15 +93,22 @@ function setupUpdateModalEvents() {
   // Download update
   downloadBtn?.addEventListener('click', async () => {
     try {
+      console.log('🚀 Starting download from modal...');
       downloadBtn.disabled = true;
       downloadBtn.textContent = 'Downloading...';
       document.getElementById('downloadProgressModal').style.display = 'block';
       
+      console.log('📡 Calling window.companion.downloadUpdate() from modal...');
       const result = await window.companion.downloadUpdate();
+      console.log('📋 Modal download result:', result);
+      
       if (!result.success) {
         throw new Error(result.error);
       }
+      
+      console.log('✅ Modal download initiated successfully');
     } catch (error) {
+      console.error('❌ Modal download failed:', error);
       showUpdateError(error.message);
       downloadBtn.disabled = false;
       downloadBtn.textContent = 'Download Update';
@@ -98,16 +119,22 @@ function setupUpdateModalEvents() {
   // Install update
   installBtn?.addEventListener('click', async () => {
     try {
+      console.log('🚀 Starting installation...');
       installBtn.disabled = true;
       installBtn.textContent = 'Installing...';
       
+      console.log('📡 Calling window.companion.installUpdate()...');
       const result = await window.companion.installUpdate();
+      console.log('📋 Install result:', result);
+      
       if (!result.success) {
         throw new Error(result.error);
       }
       
+      console.log('✅ Installation initiated successfully');
       showRestartMessage();
     } catch (error) {
+      console.error('❌ Installation failed:', error);
       showUpdateError(error.message);
       installBtn.disabled = false;
       installBtn.textContent = 'Install & Restart';
@@ -131,9 +158,13 @@ function setupUpdateModalEvents() {
 async function checkForUpdates() {
   if (isCheckingForUpdates) return;
   
+  console.log('🚀 Starting update check...');
+  
   // Check if we're in development mode
   try {
     const isDev = await window.companion.isDevelopment();
+    console.log('🔍 Development mode check:', isDev);
+    
     if (isDev) {
       console.log('🔧 Development mode: Skipping update check');
       updateStatus('Development Mode', 'Update checks are disabled in development.');
@@ -152,13 +183,35 @@ async function checkForUpdates() {
   updateStatus('Checking for updates...', 'Please wait while we check for the latest version.');
   
   try {
+    console.log('📡 Calling window.companion.checkForUpdates()...');
     const result = await window.companion.checkForUpdates();
+    console.log('📋 Update check result:', result);
     
     if (!result.success) {
+      // Check if auto-updater is disabled
+      if (result.error && result.error.includes('disabled')) {
+        console.log('🚫 Auto-updater is disabled - proceeding to main app');
+        showUpdateNotAvailable();
+        return;
+      }
       throw new Error(result.error);
     }
+    
+    // Check if update is available in the result
+    if (result.result && result.result.isUpdateAvailable) {
+      console.log('✅ Update available detected in result!');
+      console.log('📋 Update info:', result.result.updateInfo);
+      
+      // Manually trigger the update available flow since events might not fire
+      updateInfo = result.result.updateInfo;
+      showUpdateAvailable();
+    } else {
+      console.log('ℹ️ No update available in result');
+      showUpdateNotAvailable();
+    }
+    
   } catch (error) {
-    console.error('Update check failed:', error);
+    console.error('❌ Update check failed:', error);
     showUpdateError(error.message);
   }
 }
@@ -200,15 +253,22 @@ function showUpdateAvailable() {
     downloadBtn.style.display = 'inline-block';
     downloadBtn.addEventListener('click', async () => {
       try {
+        console.log('🚀 Starting download...');
         downloadBtn.disabled = true;
         downloadBtn.textContent = 'Downloading...';
         document.getElementById('downloadProgress').style.display = 'block';
         
+        console.log('📡 Calling window.companion.downloadUpdate()...');
         const result = await window.companion.downloadUpdate();
+        console.log('📋 Download result:', result);
+        
         if (!result.success) {
           throw new Error(result.error);
         }
+        
+        console.log('✅ Download initiated successfully');
       } catch (error) {
+        console.error('❌ Download failed:', error);
         showUpdateError(error.message);
         downloadBtn.disabled = false;
         downloadBtn.textContent = 'Download Update';
@@ -240,9 +300,17 @@ function showUpdateAvailable() {
 }
 
 function showUpdateDownloaded() {
+  console.log('📥 Update downloaded - showing install button');
+  console.log('📥 showUpdateDownloaded called - setting up install button');
+  
   const downloadBtn = document.getElementById('downloadUpdateBtn');
   const installBtn = document.getElementById('installUpdateBtn');
   const downloadProgress = document.getElementById('downloadProgress');
+  
+  console.log('📥 UI elements found:');
+  console.log('  - downloadBtn:', !!downloadBtn);
+  console.log('  - installBtn:', !!installBtn);
+  console.log('  - downloadProgress:', !!downloadProgress);
   
   // Hide download progress
   if (downloadProgress) downloadProgress.style.display = 'none';
@@ -253,21 +321,32 @@ function showUpdateDownloaded() {
     installBtn.style.display = 'inline-block';
     installBtn.addEventListener('click', async () => {
       try {
+        console.log('🚀 Starting installation from downloaded state...');
+        console.log('🚀 Install button clicked - proceeding with installation');
         installBtn.disabled = true;
         installBtn.textContent = 'Installing...';
         
+        console.log('📡 Calling window.companion.installUpdate() from downloaded state...');
         const result = await window.companion.installUpdate();
+        console.log('📋 Downloaded state install result:', result);
+        
         if (!result.success) {
           throw new Error(result.error);
         }
         
+        console.log('✅ Installation from downloaded state initiated successfully');
         showRestartMessage();
       } catch (error) {
+        console.error('❌ Installation from downloaded state failed:', error);
         showUpdateError(error.message);
         installBtn.disabled = false;
         installBtn.textContent = 'Install & Restart';
       }
     });
+    
+    console.log('📥 Install button event listener added');
+  } else {
+    console.error('❌ Install button not found!');
   }
   
   // Update modal
@@ -333,18 +412,45 @@ function showUpdateError(error) {
   isCheckingForUpdates = false;
   
   let errorMessage = error;
+  let errorType = 'unknown';
+  
   if (typeof error === 'object' && error.message) {
     errorMessage = error.message;
+    errorType = error.type || 'unknown';
   }
   
-  updateStatus('Update Check Failed', 'An error occurred while checking for updates.');
+  // Handle specific error types
+  if (errorType === 'security' || errorMessage.includes('signature') || errorMessage.includes('Code signature')) {
+    updateStatus('Code Signature Issue', 'The update has a code signature issue. This is expected for unsigned apps.');
+    console.log('🔒 Code signature error detected - this is expected for unsigned apps');
+    console.log('🔒 Allowing user to continue with current version');
+  } else {
+    updateStatus('Update Check Failed', 'An error occurred while checking for updates.');
+  }
   
   // Show error modal
   const errorModal = document.getElementById('errorModal');
   const errorMessageEl = document.getElementById('errorMessage');
   const continueErrorBtn = document.getElementById('continueErrorBtn');
   
-  if (errorMessageEl) errorMessageEl.textContent = `Update Check Failed: ${errorMessage}`;
+  if (errorMessageEl) {
+    if (errorType === 'security') {
+      errorMessageEl.innerHTML = `
+        <strong>Code Signature Issue</strong><br><br>
+        The update has a code signature verification issue. This is expected for unsigned apps.<br><br>
+        <strong>What this means:</strong><br>
+        • The app is not digitally signed by Apple<br>
+        • This is normal for development/testing versions<br>
+        • You can continue using the current version safely<br><br>
+        <strong>Next steps:</strong><br>
+        • Click "Continue" to use the current version<br>
+        • Contact support if you need a signed version
+      `;
+    } else {
+      errorMessageEl.textContent = `Update Check Failed: ${errorMessage}`;
+    }
+  }
+  
   if (errorModal) errorModal.style.display = 'flex';
   
   if (continueErrorBtn) {

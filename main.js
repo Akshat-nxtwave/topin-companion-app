@@ -32,15 +32,41 @@ const updateSecurity = new UpdateSecurity();
 autoUpdater.autoDownload = false; // This will handle downloads manually for better UX
 autoUpdater.autoInstallOnAppQuit = false; // This will handle manual installation for better control
 
+// TEMPORARY BYPASS: Disable auto-updater completely for testing
+const DISABLE_AUTO_UPDATER = true; // Set to false to re-enable
+
+// Disable code signature verification for testing (since we're not code signing)
+// Try multiple approaches to disable signature verification
+autoUpdater.verifySignature = false;
+autoUpdater.requireCodeSigning = false;
+
+// Store update info globally for IPC handlers
+let currentUpdateInfo = null;
+
 // Set the update feed URL for GitHub releases
 autoUpdater.setFeedURL({
   provider: 'github',
   owner: 'Akshat-nxtwave',
-  repo: 'topin-companion-app'
+  repo: 'topin-companion-app',
+  private: false
 });
 
+// Configure timeouts to prevent hanging
+autoUpdater.requestHeaders = {
+  'User-Agent': 'TOPIN-Companion-Updater'
+};
+
+// Set longer timeouts for download operations
+autoUpdater.downloadTimeout = 300000; // 5 minutes
+autoUpdater.requestTimeout = 60000; // 1 minute
+
+// Log the configured feed URL
+console.log('🔗 Auto-updater feed URL:', autoUpdater.getFeedURL());
+console.log('⏱️ Download timeout:', autoUpdater.downloadTimeout);
+console.log('⏱️ Request timeout:', autoUpdater.requestTimeout);
+
 // Security: Only check for updates in production
-if (process.env.NODE_ENV !== 'development') {
+if (process.env.NODE_ENV !== 'development' && !DISABLE_AUTO_UPDATER) {
   // Check for updates on startup (but don't notify automatically)
   setTimeout(() => {
     autoUpdater.checkForUpdates().catch(err => {
@@ -50,17 +76,37 @@ if (process.env.NODE_ENV !== 'development') {
       }
     });
   }, 5000); // Wait 5 seconds after app start
+} else if (DISABLE_AUTO_UPDATER) {
+  console.log('🚫 Auto-updater disabled for testing - skipping update checks');
 } else {
   console.log('🔧 Development mode: Update checks disabled');
 }
 
 // Auto-updater event handlers
 autoUpdater.on('checking-for-update', () => {
-  console.log('Checking for update...');
+  console.log('🔍 Checking for update...');
+  console.log('📡 Feed URL:', autoUpdater.getFeedURL());
+  console.log('📦 Current version:', app.getVersion());
 });
 
 autoUpdater.on('update-available', (info) => {
-  console.log('Update available:', info);
+  console.log('✅ Update available!');
+  console.log('📋 Update info:', JSON.stringify(info, null, 2));
+  
+  // Store update info globally for IPC handlers
+  currentUpdateInfo = info;
+  console.log('💾 Stored update info globally:', currentUpdateInfo);
+  
+  // Log the complete download URLs
+  if (info.files && info.files.length > 0) {
+    console.log('🌐 Download URLs:');
+    info.files.forEach((file, index) => {
+      console.log(`  File ${index + 1}:`);
+      console.log(`    - URL: ${file.url}`);
+      console.log(`    - Size: ${file.size} bytes`);
+      console.log(`    - SHA512: ${file.sha512}`);
+    });
+  }
   
   // Security validation
   if (!updateSecurity.validateUpdateInfo(info)) {
@@ -89,11 +135,29 @@ autoUpdater.on('update-available', (info) => {
 });
 
 autoUpdater.on('update-not-available', (info) => {
-  console.log('Update not available:', info);
+  console.log('❌ Update not available');
+  console.log('📋 Info:', JSON.stringify(info, null, 2));
+  
+  // Send update not available event to renderer
+  if (mainWindow) {
+    mainWindow.webContents.send('update-not-available', info);
+  }
 });
 
 autoUpdater.on('error', (err) => {
-  console.error('Auto-updater error:', err);
+  console.error('❌ Auto-updater error:', err.message);
+  console.error('📋 Error details:', JSON.stringify(err, null, 2));
+  console.error('📋 Error properties:', {
+    message: err.message,
+    stack: err.stack,
+    code: err.code,
+    errno: err.errno,
+    syscall: err.syscall,
+    hostname: err.hostname,
+    port: err.port,
+    path: err.path,
+    timeout: err.timeout
+  });
   
   // Categorize errors for better user experience
   let errorMessage = err.message;
@@ -108,9 +172,15 @@ autoUpdater.on('error', (err) => {
   } else if (err.message.includes('permission') || err.message.includes('access')) {
     errorType = 'permission';
     errorMessage = 'Permission error: Unable to download update. Please run as administrator.';
-  } else if (err.message.includes('signature') || err.message.includes('verification')) {
+  } else if (err.message.includes('signature') || err.message.includes('verification') || err.message.includes('Code signature')) {
     errorType = 'security';
-    errorMessage = 'Security error: Update signature verification failed.';
+    errorMessage = 'Code signature verification failed. This is expected for unsigned apps. You can continue using the current version.';
+    
+    // For signature errors, we'll treat this as a non-critical error and allow the user to continue
+    console.log('🔒 Code signature error - treating as non-critical, allowing user to continue');
+  } else if (err.message.includes('timeout') || err.message.includes('ETIMEDOUT')) {
+    errorType = 'timeout';
+    errorMessage = 'Request timeout: The update server is taking too long to respond. Please try again.';
   }
   
   // Send error event to renderer with categorized information
@@ -127,7 +197,14 @@ autoUpdater.on('download-progress', (progressObj) => {
   let log_message = "Download speed: " + progressObj.bytesPerSecond;
   log_message = log_message + ' - Downloaded ' + progressObj.percent + '%';
   log_message = log_message + ' (' + progressObj.transferred + "/" + progressObj.total + ')';
-  console.log(log_message);
+  console.log('📥 Download progress:', log_message);
+  console.log('📥 Progress details:', {
+    bytesPerSecond: progressObj.bytesPerSecond,
+    percent: progressObj.percent,
+    transferred: progressObj.transferred,
+    total: progressObj.total,
+    speed: progressObj.speed
+  });
   
   // Send progress to renderer
   if (mainWindow) {
@@ -136,9 +213,24 @@ autoUpdater.on('download-progress', (progressObj) => {
 });
 
 autoUpdater.on('update-downloaded', (info) => {
-  console.log('Update downloaded:', info);
+  console.log('📥 Update downloaded event received!');
+  console.log('📥 Downloaded info:', info);
+  console.log('📥 Downloaded info details:');
+  console.log('  - Version:', info.version);
+  console.log('  - Release name:', info.releaseName);
+  console.log('  - Release date:', info.releaseDate);
+  console.log('  - Path:', info.path);
+  console.log('  - SHA512:', info.sha512);
+  
+  // Check auto-updater state after download
+  console.log('📥 Auto-updater state after download:');
+  console.log('  - updateDownloaded:', autoUpdater.updateDownloaded);
+  console.log('  - isUpdateDownloaded:', autoUpdater.isUpdateDownloaded);
+  console.log('  - updateInfo:', autoUpdater.updateInfo);
+  
   // Send update downloaded event to renderer
   if (mainWindow) {
+    console.log('📥 Sending update-downloaded event to renderer...');
     mainWindow.webContents.send('update-downloaded', info);
   }
 });
@@ -432,6 +524,13 @@ function createWindow() {
       mainWindow.webContents.openDevTools({ mode: "detach" });
     } catch {}
   }
+  
+  // Add keyboard shortcut to open DevTools (Cmd+Option+I)
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.meta && input.alt && input.key.toLowerCase() === 'i') {
+      mainWindow.webContents.openDevTools({ mode: "detach" });
+    }
+  });
 
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -1367,60 +1466,127 @@ ipcMain.handle("app:listActiveSharingTabs", async () => {
 ipcMain.handle("app:checkForUpdates", async () => {
   try {
     // Security check: Only allow in production or when explicitly requested
-    if (process.env.NODE_ENV === 'development') {
-      console.log('Update check skipped in development mode');
-      return { success: false, error: 'Update checks disabled in development mode' };
+    if (process.env.NODE_ENV === 'development' || DISABLE_AUTO_UPDATER) {
+      console.log('Update check skipped - auto-updater disabled');
+      return { success: false, error: 'Update checks disabled' };
     }
     
+    console.log('🔍 IPC: Starting update check...');
     const result = await autoUpdater.checkForUpdates();
+    console.log('📋 IPC: Update check result:', result);
+    
+    // Check if update is available and send event manually if needed
+    if (result && result.isUpdateAvailable) {
+      console.log('✅ IPC: Update available, sending event to renderer');
+      
+      // Store update info globally for download/install handlers
+      currentUpdateInfo = result.updateInfo;
+      console.log('💾 IPC: Stored update info globally from result:', currentUpdateInfo);
+      
+      if (mainWindow) {
+        mainWindow.webContents.send('update-available', result.updateInfo);
+      }
+    } else {
+      console.log('ℹ️ IPC: No update available, sending event to renderer');
+      if (mainWindow) {
+        mainWindow.webContents.send('update-not-available', result);
+      }
+    }
+    
     return { success: true, result };
   } catch (error) {
-    console.error('Error checking for updates:', error);
+    console.error('❌ IPC: Error checking for updates:', error);
     return { success: false, error: error.message };
   }
 });
 
 ipcMain.handle("app:downloadUpdate", async () => {
   try {
-    // Validate that an update is available before downloading
-    const updateInfo = autoUpdater.updateInfo;
+    console.log('🚀 IPC: Starting download...');
+    
+    // Use the globally stored update info
+    const updateInfo = currentUpdateInfo || autoUpdater.updateInfo;
+    console.log('📋 IPC: Update info for download:', updateInfo);
+    console.log('📋 IPC: Current update info (global):', currentUpdateInfo);
+    console.log('📋 IPC: Auto-updater update info:', autoUpdater.updateInfo);
+    
     if (!updateInfo) {
+      console.log('❌ IPC: No update info available');
       return { success: false, error: 'No update available to download' };
     }
     
     // Security: Validate update info
     if (!updateInfo.version || !updateInfo.files || updateInfo.files.length === 0) {
+      console.log('❌ IPC: Invalid update info');
       return { success: false, error: 'Invalid update information' };
     }
     
+    console.log('📡 IPC: Calling autoUpdater.downloadUpdate()...');
     await autoUpdater.downloadUpdate();
+    console.log('✅ IPC: Download initiated successfully');
+    
     return { success: true };
   } catch (error) {
-    console.error('Error downloading update:', error);
+    console.error('❌ IPC: Error downloading update:', error);
     return { success: false, error: error.message };
   }
 });
 
 ipcMain.handle("app:installUpdate", async () => {
   try {
+    console.log('🚀 IPC: Starting installation...');
+    
+    // Check all auto-updater properties
+    console.log('📋 IPC: Auto-updater state check:');
+    console.log('  - updateDownloaded:', autoUpdater.updateDownloaded);
+    console.log('  - updateInfo:', autoUpdater.updateInfo);
+    console.log('  - isUpdaterActive:', autoUpdater.isUpdaterActive);
+    console.log('  - isUpdateAvailable:', autoUpdater.isUpdateAvailable);
+    console.log('  - isUpdateDownloaded:', autoUpdater.isUpdateDownloaded);
+    
     // Validate that update is downloaded before installing
     if (!autoUpdater.updateDownloaded) {
-      return { success: false, error: 'No update downloaded to install' };
+      console.log('❌ IPC: No update downloaded - autoUpdater.updateDownloaded is false');
+      console.log('❌ IPC: Checking alternative properties...');
+      console.log('  - isUpdateDownloaded:', autoUpdater.isUpdateDownloaded);
+      
+      // Try alternative check
+      if (!autoUpdater.isUpdateDownloaded) {
+        return { success: false, error: 'No update downloaded to install' };
+      }
     }
     
     // Security: Final validation before installation
-    const updateInfo = autoUpdater.updateInfo;
+    const updateInfo = currentUpdateInfo || autoUpdater.updateInfo;
+    console.log('📋 IPC: Update info for installation:', updateInfo);
+    console.log('📋 IPC: Current update info (global):', currentUpdateInfo);
+    console.log('📋 IPC: Auto-updater update info:', autoUpdater.updateInfo);
+    
     if (!updateInfo || !updateInfo.version) {
+      console.log('❌ IPC: Invalid update info for installation');
       return { success: false, error: 'Invalid update information for installation' };
     }
     
     // Log installation attempt for security audit
-    console.log(`Installing update to version ${updateInfo.version}`);
+    console.log(`✅ IPC: Installing update to version ${updateInfo.version}`);
+    console.log('📋 IPC: About to call autoUpdater.quitAndInstall()...');
     
+    // Add a small delay to ensure all logs are written
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    console.log('🚀 IPC: Calling autoUpdater.quitAndInstall() now...');
     autoUpdater.quitAndInstall();
+    
+    console.log('✅ IPC: quitAndInstall() called successfully');
     return { success: true };
   } catch (error) {
-    console.error('Error installing update:', error);
+    console.error('❌ IPC: Error installing update:', error);
+    console.error('❌ IPC: Error details:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code,
+      errno: error.errno
+    });
     return { success: false, error: error.message };
   }
 });
