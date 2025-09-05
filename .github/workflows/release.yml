@@ -72,7 +72,10 @@ jobs:
             dist/**/*.AppImage
             dist/**/*.deb
             dist/**/*.zip
-            dist/**/*.yml
+            dist/**/latest-mac.yml
+            dist/**/latest-linux.yml
+            dist/**/latest.yml
+
           draft: false
           prerelease: false
         env:
