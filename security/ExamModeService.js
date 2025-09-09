@@ -13,7 +13,33 @@ class ExamModeService {
     
     // Blacklisted processes for enhanced security detection
     this.blacklistedProcesses = [
-     'remote_assistance_host'
+      // macOS-specific remote access tools
+      'remote_assistance_host',
+      // 'teamviewer',
+      // 'anydesk',
+      // 'logmein',
+      // 'gotomypc',
+      // 'chrome_remote_desktop',
+      // 'vnc',
+      // 'screen_sharing',
+      // 'remote_desktop',
+      // 'teamviewer_daemon',
+      // 'anydesk_daemon',
+      // 'logmein_daemon',
+      // 'gotomypc_daemon',
+      // 'vnc_server',
+      // 'vncviewer',
+      // 'tigervnc',
+      // 'tightvnc',
+      // 'ultravnc',
+      // 'realvnc',
+      // 'chrome_remote_desktop_host',
+      // 'chrome_remote_desktop_service',
+      // 'rdp',
+      // 'microsoft_remote_desktop',
+      // 'apple_remote_desktop',
+      // 'ard_agent',
+      // 'remote_desktop_agent'
     ];
   }
 
@@ -568,6 +594,93 @@ class ExamModeService {
     return new Set();
   }
 
+  async collectMacBackgroundProcesses() {
+    // Collect all background processes on macOS using ps command
+    // This is similar to how Windows collects background processes
+    try {
+      const cmd = `ps -axo pid,ppid,user,command | grep -v "\\[.*\\]" | tail -n +2`;
+      const res = await this.execCmd(cmd, 3000);
+      const backgroundProcesses = [];
+      
+      if (res.ok && res.stdout) {
+        const lines = res.stdout.split(/\r?\n/).filter(Boolean);
+        
+        for (const line of lines) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 4) {
+            const pid = Number(parts[0]) || 0;
+            const ppid = Number(parts[1]) || 0;
+            const user = parts[2] || '';
+            const command = parts.slice(3).join(' ').trim();
+            
+            if (pid && command) {
+              // Extract process name from command
+              const processName = command.split(/\s+/)[0].split('/').pop() || '';
+              
+              backgroundProcesses.push({
+                pid,
+                ppid,
+                user,
+                name: processName,
+                command
+              });
+            }
+          }
+        }
+      }
+      
+      return backgroundProcesses;
+    } catch (error) {
+      this.log('Error collecting macOS background processes:', error);
+      return [];
+    }
+  }
+
+  async collectMacAllProcesses() {
+    // Collect all processes on macOS (both active and background) for comprehensive blacklist checking
+    try {
+      const cmd = `ps -axo pid,ppid,user,%cpu,%mem,command | tail -n +2`;
+      const res = await this.execCmd(cmd, 4000);
+      const allProcesses = [];
+      
+      if (res.ok && res.stdout) {
+        const lines = res.stdout.split(/\r?\n/).filter(Boolean);
+        
+        for (const line of lines) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 6) {
+            const pid = Number(parts[0]) || 0;
+            const ppid = Number(parts[1]) || 0;
+            const user = parts[2] || '';
+            const cpu = Number(parts[3]) || 0;
+            const mem = Number(parts[4]) || 0;
+            const command = parts.slice(5).join(' ').trim();
+            
+            if (pid && command) {
+              // Extract process name from command
+              const processName = command.split(/\s+/)[0].split('/').pop() || '';
+              
+              allProcesses.push({
+                pid,
+                ppid,
+                user,
+                name: processName,
+                command,
+                cpu,
+                mem
+              });
+            }
+          }
+        }
+      }
+      
+      return allProcesses;
+    } catch (error) {
+      this.log('Error collecting macOS all processes:', error);
+      return [];
+    }
+  }
+
   isChromiumMainProcess(command) {
     const c = String(command || '').toLowerCase();
     if (!c.includes('--type=')) return true; // main process usually has no --type
@@ -602,17 +715,34 @@ class ExamModeService {
 
       // Linux: application detection is handled by SecurityService.js. Do not detect here.
       if (isLinux) {
+        // Still check for blacklisted processes on Linux
+        const blacklistedProcesses = [];
+        for (const p of all) {
+          if (this.isBlacklistedProcess(p.name, p.command)) {
+            blacklistedProcesses.push({ 
+              pid: p.pid, 
+              name: p.name, 
+              cpu: p.cpu, 
+              mem: p.mem, 
+              command: p.command,
+              isBlacklisted: true 
+            });
+          }
+        }
+        
         return {
           ok: true,
           summary: {
             totalProcesses: list.length,
             nonSystemProcesses: 0,
-            flaggedCount: 0,
+            flaggedCount: blacklistedProcesses.length,
+            blacklistedCount: blacklistedProcesses.length,
             activeBrowsers: [],
             allowedBrowserFamily: null,
             multipleBrowsersActive: false
           },
-          flagged: [],
+          flagged: blacklistedProcesses,
+          blacklistedProcesses,
           allowed: {
             browserFamily: null,
             companionMatches: opts.allowedCompanionMatches
@@ -630,8 +760,11 @@ class ExamModeService {
         winMainPidSet = await this.getActiveWindowsUIProcessesPS();
       }
       let macActiveNames = new Set();
+      let macAllProcesses = [];
       if (isMac) {
         macActiveNames = await this.collectMacActiveAppNames();
+        // Collect all processes for comprehensive blacklist checking on macOS
+        macAllProcesses = await this.collectMacAllProcesses();
       }
 
       const getExeBase = (cmd) => {
@@ -767,13 +900,16 @@ class ExamModeService {
       const blacklistedProcesses = [];
       
       // First pass: collect blacklisted processes from all processes (active + background)
-      for (const p of all) {
+      // On macOS, use the comprehensive process collection for better detection
+      const processesToCheck = isMac && macAllProcesses.length > 0 ? macAllProcesses : all;
+      
+      for (const p of processesToCheck) {
         if (this.isBlacklistedProcess(p.name, p.command)) {
           blacklistedProcesses.push({ 
             pid: p.pid, 
             name: p.name, 
-            cpu: p.cpu, 
-            mem: p.mem, 
+            cpu: p.cpu || 0, 
+            mem: p.mem || 0, 
             command: p.command,
             isBlacklisted: true 
           });
