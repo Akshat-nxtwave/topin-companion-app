@@ -10,6 +10,11 @@ class ExamModeService {
     this.screenSharingDomains = [
       'meet.google.com','teams.microsoft.com','zoom.us','webex.com','gotomeeting.com','discord.com','slack.com','whereby.com','jitsi.org','appear.in','skype.com','teamviewer.com'
     ];
+    
+    // Blacklisted processes for enhanced security detection
+    this.blacklistedProcesses = [
+     'remote_assistance_host'
+    ];
   }
 
   log(message, ...args) {
@@ -96,6 +101,21 @@ class ExamModeService {
       /^kworker/, /^ksoftirqd/, /^rcu_/, /^rcu-/, /^rcu\b/, /^cpuhp/, /^migration/, /^idle_inject/, /^oom_reaper/, /^kauditd/, /^kdevtmpfs/, /^writeback/, /^netns/, /^slub_flushwq/, /^mm_percpu_wq/, /^pool_workqueue_release/
     ];
     return patterns.some(r => r.test(n));
+  }
+
+  isBlacklistedProcess(name, command) {
+    const n = String(name || '').toLowerCase();
+    const c = String(command || '').toLowerCase();
+    
+    // Check if process name or command starts with any blacklisted process
+    for (const blacklisted of this.blacklistedProcesses) {
+      const blacklistedLower = blacklisted.toLowerCase();
+      if (n.startsWith(blacklistedLower) || c.startsWith(blacklistedLower)) {
+        return true;
+      }
+    }
+    
+    return false;
   }
 
   async getActiveLinuxWindowApplications() {
@@ -744,6 +764,23 @@ class ExamModeService {
       }
 
       const flagged = [];
+      const blacklistedProcesses = [];
+      
+      // First pass: collect blacklisted processes from all processes (active + background)
+      for (const p of all) {
+        if (this.isBlacklistedProcess(p.name, p.command)) {
+          blacklistedProcesses.push({ 
+            pid: p.pid, 
+            name: p.name, 
+            cpu: p.cpu, 
+            mem: p.mem, 
+            command: p.command,
+            isBlacklisted: true 
+          });
+        }
+      }
+      
+      // Second pass: flag non-system processes (existing logic)
       for (const p of nonSystem) {
         const fam = browserFamily(p.name, p.command);
         const isMain = fam ? (
@@ -757,6 +794,15 @@ class ExamModeService {
         const isWhiteListedProcess = whiteListedProcesses.includes(p.name);
         if (allowAsBrowser || allowAsCompanion || isWhiteListedProcess) continue;
         flagged.push({ pid: p.pid, name: p.name, cpu: p.cpu, mem: p.mem, command: p.command });
+      }
+      
+      // Add blacklisted processes to flagged list (they should always be flagged)
+      for (const blacklisted of blacklistedProcesses) {
+        // Avoid duplicates if blacklisted process is already in flagged
+        const alreadyFlagged = flagged.some(f => f.pid === blacklisted.pid);
+        if (!alreadyFlagged) {
+          flagged.push(blacklisted);
+        }
       }
 
       flagged.sort((a, b) => (b.cpu || 0) - (a.cpu || 0));
@@ -773,11 +819,13 @@ class ExamModeService {
           totalProcesses: all.length,
           nonSystemProcesses: nonSystem.length,
           flaggedCount: flagged.length,
+          blacklistedCount: blacklistedProcesses.length,
           activeBrowsers,
           allowedBrowserFamily,
           multipleBrowsersActive
         },
         flagged,
+        blacklistedProcesses,
         allowed: {
           browserFamily: allowedBrowserFamily,
           companionMatches: opts.allowedCompanionMatches
