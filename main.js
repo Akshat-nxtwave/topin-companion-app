@@ -226,11 +226,16 @@ autoUpdater.on('update-downloaded', (info) => {
   console.log('  - Path:', info.path);
   console.log('  - SHA512:', info.sha512);
   
+  // Store the update info globally for installation
+  currentUpdateInfo = info;
+  console.log('📥 Stored update info globally:', currentUpdateInfo);
+  
   // Check auto-updater state after download
   console.log('📥 Auto-updater state after download:');
   console.log('  - updateDownloaded:', autoUpdater.updateDownloaded);
   console.log('  - isUpdateDownloaded:', autoUpdater.isUpdateDownloaded);
   console.log('  - updateInfo:', autoUpdater.updateInfo);
+  console.log('  - currentUpdateInfo (global):', currentUpdateInfo);
   
   // Send update downloaded event to renderer
   if (mainWindow) {
@@ -1508,15 +1513,26 @@ ipcMain.handle("app:downloadUpdate", async () => {
   try {
     console.log('🚀 IPC: Starting download...');
     
-    // Use the globally stored update info
-    const updateInfo = currentUpdateInfo || autoUpdater.updateInfo;
+    // Use the globally stored update info or get from autoUpdater
+    let updateInfo = currentUpdateInfo || autoUpdater.updateInfo;
     console.log('📋 IPC: Update info for download:', updateInfo);
     console.log('📋 IPC: Current update info (global):', currentUpdateInfo);
     console.log('📋 IPC: Auto-updater update info:', autoUpdater.updateInfo);
     
+    // If we don't have update info, try to get it from autoUpdater
     if (!updateInfo) {
-      console.log('❌ IPC: No update info available');
-      return { success: false, error: 'No update available to download' };
+      console.log('❌ IPC: No update info available, checking autoUpdater state...');
+      console.log('  - isUpdateAvailable:', autoUpdater.isUpdateAvailable);
+      console.log('  - updateInfo:', autoUpdater.updateInfo);
+      
+      if (!autoUpdater.isUpdateAvailable || !autoUpdater.updateInfo) {
+        return { success: false, error: 'No update available to download. Please check for updates first.' };
+      }
+      
+      updateInfo = autoUpdater.updateInfo;
+      // Store it globally for later use
+      currentUpdateInfo = updateInfo;
+      console.log('📋 IPC: Stored update info from autoUpdater:', currentUpdateInfo);
     }
     
     // Security: Validate update info
@@ -1525,6 +1541,7 @@ ipcMain.handle("app:downloadUpdate", async () => {
       return { success: false, error: 'Invalid update information' };
     }
     
+    console.log(`📡 IPC: Downloading update version ${updateInfo.version}...`);
     console.log('📡 IPC: Calling autoUpdater.downloadUpdate()...');
     await autoUpdater.downloadUpdate();
     console.log('✅ IPC: Download initiated successfully');
@@ -1547,26 +1564,35 @@ ipcMain.handle("app:installUpdate", async () => {
     console.log('  - isUpdaterActive:', autoUpdater.isUpdaterActive);
     console.log('  - isUpdateAvailable:', autoUpdater.isUpdateAvailable);
     console.log('  - isUpdateDownloaded:', autoUpdater.isUpdateDownloaded);
+    console.log('  - currentUpdateInfo (global):', currentUpdateInfo);
     
-    // Validate that update is downloaded before installing
-    if (!autoUpdater.updateDownloaded) {
-      console.log('❌ IPC: No update downloaded - autoUpdater.updateDownloaded is false');
-      console.log('❌ IPC: Checking alternative properties...');
-      console.log('  - isUpdateDownloaded:', autoUpdater.isUpdateDownloaded);
-      
-      // Try alternative check
-      if (!autoUpdater.isUpdateDownloaded) {
-        return { success: false, error: 'No update downloaded to install' };
-      }
-    }
-    
-    // Security: Final validation before installation
+    // Get update info from multiple sources
     const updateInfo = currentUpdateInfo || autoUpdater.updateInfo;
     console.log('📋 IPC: Update info for installation:', updateInfo);
-    console.log('📋 IPC: Current update info (global):', currentUpdateInfo);
-    console.log('📋 IPC: Auto-updater update info:', autoUpdater.updateInfo);
     
-    if (!updateInfo || !updateInfo.version) {
+    // More flexible validation - check if we have any update info
+    if (!updateInfo) {
+      console.log('❌ IPC: No update info available for installation');
+      return { success: false, error: 'No update information available. Please download the update first.' };
+    }
+    
+    // Check if update is actually downloaded (multiple ways to verify)
+    const isDownloaded = autoUpdater.updateDownloaded || 
+                        autoUpdater.isUpdateDownloaded || 
+                        (updateInfo && updateInfo.path && require('fs').existsSync(updateInfo.path));
+    
+    console.log('📋 IPC: Download verification:');
+    console.log('  - autoUpdater.updateDownloaded:', autoUpdater.updateDownloaded);
+    console.log('  - autoUpdater.isUpdateDownloaded:', autoUpdater.isUpdateDownloaded);
+    console.log('  - updateInfo.path exists:', updateInfo.path ? require('fs').existsSync(updateInfo.path) : 'no path');
+    console.log('  - isDownloaded (combined):', isDownloaded);
+    
+    if (!isDownloaded) {
+      console.log('❌ IPC: Update not properly downloaded');
+      return { success: false, error: 'Update not properly downloaded. Please try downloading again.' };
+    }
+    
+    if (!updateInfo.version) {
       console.log('❌ IPC: Invalid update info for installation');
       return { success: false, error: 'Invalid update information for installation' };
     }
@@ -1605,6 +1631,27 @@ ipcMain.handle("app:getAppVersion", async () => {
     };
   } catch (error) {
     console.error('Error getting app version:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("app:getUpdateStatus", async () => {
+  try {
+    const updateInfo = currentUpdateInfo || autoUpdater.updateInfo;
+    const isDownloaded = autoUpdater.updateDownloaded || 
+                        autoUpdater.isUpdateDownloaded || 
+                        (updateInfo && updateInfo.path && require('fs').existsSync(updateInfo.path));
+    
+    return {
+      success: true,
+      updateInfo: updateInfo,
+      isDownloaded: isDownloaded,
+      isUpdateAvailable: autoUpdater.isUpdateAvailable,
+      updateDownloaded: autoUpdater.updateDownloaded,
+      isUpdateDownloaded: autoUpdater.isUpdateDownloaded
+    };
+  } catch (error) {
+    console.error('❌ IPC: Error getting update status:', error);
     return { success: false, error: error.message };
   }
 });
