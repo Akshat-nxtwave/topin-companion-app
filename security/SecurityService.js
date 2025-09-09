@@ -21,6 +21,11 @@ class SecurityService extends EventEmitter {
 
     this.checkInterval = 20000;
 
+    // Blacklisted processes - any process matching these patterns will be flagged as a threat
+    this.blacklistedProcesses = [
+      'remote-assistance-host'
+    ];
+
     // Only remote control / RDP-style tools here to avoid false positives
     this.remoteControlApps = [
       'teamviewer','tv_w32','tv_x64',
@@ -589,6 +594,158 @@ class SecurityService extends EventEmitter {
       return true;
     }
     return false;
+  }
+
+  async checkBlacklistedProcesses(processes = null) {
+    const threats = [];
+    try {
+      if (!processes) {
+        processes = await this.safe('processes', () => si.processes(), 4000);
+      }
+      if (!processes?.list) return threats;
+
+      // Linux fallback: Check for processes that systeminformation might miss
+      if (process.platform === 'linux') {
+        try {
+          const fallbackThreats = await this.checkLinuxFallbackBlacklist();
+          threats.push(...fallbackThreats);
+        } catch (e) {
+          this.logError('Linux fallback blacklist check failed:', e);
+        }
+      }
+
+      for (const p of processes.list) {
+        if (!p.name && !p.command) continue;
+        const name = (p.name || '').toLowerCase();
+        const cmd = (p.command || '').toLowerCase();
+        if (this.isInstallerContext(cmd)) continue;
+        
+        // Skip system helpers like AirPlayXPCHelper
+        if (this.isSystemHelper(name, cmd)) {
+          this.log(`🔧 Skipping system helper in blacklist check: ${p.name}`);
+          continue;
+        }
+
+        // Compare against executable basename when possible
+        const firstToken = (p.command || '').split(/\s+/)[0] || '';
+        const exeBase = path.basename(firstToken).toLowerCase();
+
+        // Match against blacklisted processes
+        const matchedProcess = this.blacklistedProcesses.find(process => {
+          const proc = String(process || '').toLowerCase();
+          if (!proc) return false;
+          
+          // Enhanced matching for hyphenated names and exact matches
+          const exactMatch = name === proc || exeBase === proc;
+          const includesMatch = name.includes(proc) || exeBase.includes(proc);
+          const cmdMatch = cmd.includes(proc) && !/\.(deb|rpm|msi|dmg)/.test(cmd);
+          
+          // Special handling for hyphenated process names
+          const hyphenatedMatch = proc.includes('-') && (name.includes(proc.replace(/-/g, '')) || exeBase.includes(proc.replace(/-/g, '')));
+          
+          const matches = exactMatch || includesMatch || cmdMatch || hyphenatedMatch;
+          
+          if (matches && name.includes('airplay')) {
+            this.log(`🔧 AirPlay process ${p.name} matched blacklist pattern "${process}" but should be excluded`);
+          }
+          return matches;
+        });
+        
+        if (!matchedProcess) continue;
+
+        // Flag as threat regardless of whether it's background or active
+        threats.push({
+          type: 'blacklisted_process_detected',
+          severity: 'critical',
+          message: `Blacklisted process detected: ${this.getDisplayNameForBlacklistedProcess(matchedProcess)}`,
+          details: { 
+            pid: p.pid, 
+            name: p.name, 
+            command: p.command, 
+            matchedProcess,
+            cpu: p.pcpu || 0, 
+            mem: p.pmem || 0,
+            isBackground: this.isBackgroundService(name, cmd)
+          }
+        });
+      }
+    } catch (e) {
+      this.logError('Blacklist process check failed:', e);
+    }
+    return threats;
+  }
+
+  async checkLinuxFallbackBlacklist() {
+    const threats = [];
+    try {
+      // Use ps command to find processes that systeminformation might miss
+      const { stdout } = await execAsync('ps aux 2>/dev/null || true');
+      if (!stdout || !stdout.trim()) return threats;
+      
+      const lines = stdout.trim().split('\n');
+      for (const line of lines.slice(1)) { // Skip header
+        if (!line.trim()) continue;
+        
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 11) continue;
+        
+        const pid = Number(parts[1]) || 0;
+        const cmd = parts.slice(10).join(' '); // Command starts at index 10
+        const name = parts[10] || ''; // First part of command
+        
+        // Check if this matches any blacklisted process
+        const matchedProcess = this.blacklistedProcesses.find(process => {
+          const p = String(process || '').toLowerCase();
+          if (!p) return false;
+          
+          const nameLower = name.toLowerCase();
+          const cmdLower = cmd.toLowerCase();
+          
+          // Enhanced matching for hyphenated names and exact matches
+          const exactMatch = nameLower === p || nameLower.includes(p);
+          const includesMatch = nameLower.includes(p) || cmdLower.includes(p);
+          const hyphenatedMatch = p.includes('-') && (nameLower.includes(p.replace(/-/g, '')) || cmdLower.includes(p.replace(/-/g, '')));
+          
+          return exactMatch || includesMatch || hyphenatedMatch;
+        });
+        
+        if (!matchedProcess) continue;
+        
+        // Flag as threat regardless of whether it's background or active
+        threats.push({
+          type: 'blacklisted_process_detected',
+          severity: 'critical',
+          message: `Blacklisted process detected: ${this.getDisplayNameForBlacklistedProcess(matchedProcess)}`,
+          details: { 
+            pid, 
+            name, 
+            command: cmd, 
+            matchedProcess, 
+            detectionMethod: 'linux_fallback',
+            isBackground: this.isBackgroundService(name, cmd)
+          }
+        });
+      }
+    } catch (e) {
+      this.logError('Linux fallback blacklist detection failed:', e);
+    }
+    return threats;
+  }
+
+  getDisplayNameForBlacklistedProcess(processName) {
+    const displayNames = {
+      'remote-assistance-host': 'Remote Assistance Host'
+    };
+    
+    const lowerName = processName.toLowerCase();
+    for (const [key, value] of Object.entries(displayNames)) {
+      if (lowerName.includes(key)) {
+        return value;
+      }
+    }
+    
+    // Fallback: capitalize first letter
+    return processName.charAt(0).toUpperCase() + processName.slice(1);
   }
 
   async checkRemoteControlApplications(processes = null) {
@@ -1933,6 +2090,7 @@ class SecurityService extends EventEmitter {
   async runAllChecks(signatures) {
     this.log(`🔍 Starting runAllChecks...`);
     const results = await Promise.allSettled([
+      this.checkBlacklistedProcesses(),
       this.checkRemoteControlApplications(),
       this.checkSuspiciousProcesses(),
       this.checkSuspiciousNetworkConnections(),
