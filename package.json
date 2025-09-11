@@ -50,7 +50,7 @@
       "comm/**",
       "security/**",
       "renderer/**",
-      "workers/**",
+      "workers/**/*",
       "data/**",
       "package.json"
     ],
@@ -64,7 +64,7 @@
       }
     ],
     "asarUnpack": [
-      "workers/**"
+      "workers/**/*"
     ],
     "linux": {
       "target": [

@@ -1,38 +1,87 @@
+// ============================================================================
+// ELECTRON MAIN PROCESS - COMPANION APP SECURITY MONITORING
+// ============================================================================
+// This is the main entry point for the Electron application that provides
+// real-time security monitoring for exam environments. It coordinates between
+// security services, communication layers, and the UI renderer process.
+
 const { app, BrowserWindow, ipcMain } = require("electron");
+
+// ============================================================================
+// ELECTRON APP CONFIGURATION & PERFORMANCE OPTIMIZATION
+// ============================================================================
+// Disable hardware acceleration to prevent GPU-related crashes and ensure
+// consistent behavior across different systems during exam monitoring
 app.disableHardwareAcceleration();
-app.commandLine.appendSwitch("disable-gpu-vsync");
-app.commandLine.appendSwitch("log-level", "3");
-app.commandLine.appendSwitch("no-sandbox");
-app.commandLine.appendSwitch("disable-dev-shm-usage");
-app.commandLine.appendSwitch("disable-gpu-sandbox");
-const path = require("path");
-const os = require("os");
-const si = require("systeminformation");
-const fs = require("fs");
-const { exec } = require("child_process");
-const SecurityService = require("./security/SecurityService");
-const ExamModeService = require("./security/ExamModeService");
-const NotificationService = require("./security/NotificationService");
-const { EventBus, AppEvent } = require("./comm/EventBus");
-const { LocalServer } = require("./comm/LocalServer");
+app.commandLine.appendSwitch("disable-gpu-vsync");        // Disable vertical sync for better performance
+app.commandLine.appendSwitch("log-level", "3");           // Reduce Chromium logging verbosity
+app.commandLine.appendSwitch("no-sandbox");               // Disable sandbox for system access
+app.commandLine.appendSwitch("disable-dev-shm-usage");    // Prevent shared memory issues
+app.commandLine.appendSwitch("disable-gpu-sandbox");      // Disable GPU sandbox for stability
 
-const securityService = new SecurityService();
-const examModeService = new ExamModeService();
-const notificationService = new NotificationService();
+// ============================================================================
+// CORE DEPENDENCIES
+// ============================================================================
+const path = require("path");                              // File system path utilities
+const os = require("os");                                  // Operating system information
+const si = require("systeminformation");                   // System information gathering
+const fs = require("fs");                                  // File system operations
+const { exec } = require("child_process");                 // Execute system commands
 
-// Initialize EventBus and WebSocket server for communication
+// ============================================================================
+// SECURITY SERVICES
+// ============================================================================
+const SecurityService = require("./security/SecurityService");     // Core security scanning
+const ExamModeService = require("./security/ExamModeService");     // Exam-specific security checks
+const NotificationService = require("./security/NotificationService"); // DND/notification monitoring
+
+// ============================================================================
+// COMMUNICATION LAYER
+// ============================================================================
+const { EventBus, AppEvent } = require("./comm/EventBus");         // Event-driven communication
+const { LocalServer } = require("./comm/LocalServer");             // WebSocket server for external communication
+
+// ============================================================================
+// SERVICE INSTANCES INITIALIZATION
+// ============================================================================
+// Create singleton instances of all security services for the application lifecycle
+const securityService = new SecurityService();           // Main security scanning service
+const examModeService = new ExamModeService();           // Exam-specific security checks
+const notificationService = new NotificationService();   // DND/notification monitoring
+
+// ============================================================================
+// EVENT-DRIVEN COMMUNICATION SETUP
+// ============================================================================
+// Initialize EventBus for inter-component communication and external event broadcasting
 const eventBus = new EventBus();
 
-// Note: Outbound events are now emitted via EventBus with AppEvent only.
+// Note: All outbound events are now emitted via EventBus with AppEvent only.
+// This ensures consistent event handling and filtering for external communication.
 
-// Function to analyze notification threats from audit result (similar to stepped scan)
+// ============================================================================
+// NOTIFICATION THREAT ANALYSIS FUNCTION
+// ============================================================================
+/**
+ * Analyzes notification audit results and converts them into standardized threat objects
+ * This function processes platform-specific notification settings and identifies violations
+ * that could compromise exam security (e.g., DND not enabled, notifications active)
+ * 
+ * @param {Object} auditResult - Result from NotificationService.auditNotifications()
+ * @returns {Array} Array of threat objects with standardized format
+ */
 function analyzeNotificationThreatsFromAudit(auditResult) {
   const threats = [];
-  // Linux: Only enforce Do Not Disturb (DND/Focus) requirement. Do not inspect apps/browsers further.
+  
+  // ============================================================================
+  // LINUX PLATFORM: DND-ONLY ENFORCEMENT
+  // ============================================================================
+  // Linux implementation focuses solely on Do Not Disturb requirement
+  // No browser/app inspection - only system-level DND enforcement
   if (process.platform === "linux") {
     const sys = auditResult.system || {};
     const status = String(sys.status || "").toLowerCase();
-    const dndOn = status === "disabled"; // our convention: notifications disabled => DND ON
+    const dndOn = status === "disabled"; // Convention: notifications disabled = DND ON
+    
     if (!dndOn) {
       threats.push({
         type: "linux_dnd_required",
@@ -47,7 +96,11 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
     return threats;
   }
 
-  // macOS-only replacement flow: require Full Disk Access and DND (Focus) ON
+  // ============================================================================
+  // MACOS PLATFORM: FOCUS MODE & PERMISSION ENFORCEMENT
+  // ============================================================================
+  // macOS requires Full Disk Access permission to read Focus state from Assertions.json
+  // and enforces Focus mode (macOS equivalent of DND) to be active
   try {
     const isMac =
       (auditResult &&
@@ -55,11 +108,13 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
         auditResult.system.platform === "darwin") ||
       process.platform === "darwin" ||
       !!auditResult.mac;
+      
     if (isMac) {
       const mac = auditResult.mac || {};
-      const permissionGranted = !!mac.permissionGranted;
-      const focusOn = !!mac.focusOn; // true only when Do Not Disturb (default) is ON
+      const permissionGranted = !!mac.permissionGranted;  // Full Disk Access granted
+      const focusOn = !!mac.focusOn;                      // Focus mode active (DND equivalent)
 
+      // First check: Full Disk Access permission required
       if (!permissionGranted) {
         threats.push({
           type: "mac_full_disk_access_required",
@@ -72,7 +127,9 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
           settingsRequired: true,
           details: mac.details || "Assertions.json not readable",
         });
-      } else if (!focusOn) {
+      } 
+      // Second check: Focus mode must be enabled
+      else if (!focusOn) {
         threats.push({
           type: "mac_focus_mode_disabled",
           severity: "high",
@@ -88,13 +145,19 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
     }
   } catch {}
 
-  // Windows: treat system DND (Focus Assist) OFF as a violation
+  // ============================================================================
+  // WINDOWS PLATFORM: FOCUS ASSIST ENFORCEMENT
+  // ============================================================================
+  // Windows enforces Focus Assist (Windows equivalent of DND) to be active
+  // This prevents notifications from interrupting the exam environment
   try {
     const sys = auditResult.system || {};
     const platform = String(sys.platform || process.platform);
+    
     if (platform === "win32") {
       const status = String(sys.status || "").toLowerCase();
-      const dndOn = status === "disabled"; // notifications disabled => DND ON
+      const dndOn = status === "disabled"; // Convention: notifications disabled = DND ON
+      
       if (!dndOn) {
         threats.push({
           type: "windows_dnd_off",
@@ -110,23 +173,36 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
     }
   } catch {}
 
-  // EXCLUDE system notifications from threat analysis as per user requirement
-  // System notifications are not considered threats
+  // ============================================================================
+  // BROWSER & APPLICATION NOTIFICATION THREAT DETECTION
+  // ============================================================================
+  // Analyze running processes and browser notification settings to identify
+  // applications that could send notifications during exam (security risk)
+  
+  // System process exclusions - these are not considered security threats
   const systemProcessNameExclusions = new Set(["win32", "darwin"]);
   const isProcessNameExcluded = (name) => {
     const n = String(name || "").toLowerCase();
     if (!n) return false;
     if (systemProcessNameExclusions.has(n)) return true;
-    if (n.includes("crashpad")) return true;
+    if (n.includes("crashpad")) return true;  // Exclude crash reporting processes
     return false;
   };
+  
+  // Build set of running process names (excluding system processes)
   const runningProcessNames = new Set(
     (auditResult.processes || [])
       .map((p) => String(p.name || "").toLowerCase())
       .filter((n) => n && !isProcessNameExcluded(n))
   );
+  
+  /**
+   * Checks if a specific browser is currently running
+   * @param {string} browserKey - Browser identifier (chrome, firefox, etc.)
+   * @returns {boolean} True if browser is running
+   */
   const hasRunningBrowser = (browserKey) => {
-    // Map logical browser key to process name patterns
+    // Map logical browser keys to actual process name patterns
     const patterns =
       {
         chrome: ["chrome"],
@@ -134,27 +210,34 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
         msedge: ["msedge", "microsoft edge"],
         brave: ["brave"],
         firefox: ["firefox"],
-      }[browserKey] || [];
-    // Exclude webview/updater helpers
+    }[browserKey] || [];
+      
+    // Exclude browser helper processes (webviews, updaters)
     const excludedSubstrings = ["webview", "edgewebview", "updater", "update"];
+    
     for (const name of runningProcessNames) {
       if (excludedSubstrings.some((x) => name.includes(x))) continue;
       if (patterns.some((p) => name.includes(p))) return true;
     }
     return false;
   };
-
-  // Check for browser notifications enabled
+  
+  // ============================================================================
+  // BROWSER NOTIFICATION THREAT DETECTION
+  // ============================================================================
+  // Check for browsers with notifications enabled - these are security threats
   // Only consider browsers with status 'enabled' as threats, regardless of URL counts
   if (auditResult.browsers && auditResult.browsers.length > 0) {
     const enabledBrowsers = [];
-
+    
     auditResult.browsers.forEach((browser) => {
       if (browser.profiles && browser.profiles.length > 0) {
         // Only profiles with status 'enabled' are threats - ignore allowed/blocked URL counts
         const enabledProfiles = browser.profiles.filter(
           (profile) => profile.status === "enabled"
         );
+        
+        // Map browser name to standardized key for process detection
         const bname = String(browser.browser || "").toLowerCase();
         const key = bname.includes("chromium")
           ? "chromium"
@@ -165,6 +248,7 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
           : bname.includes("firefox")
           ? "firefox"
           : "chrome";
+          
         // Only report as threat if corresponding browser process is actually running
         if (enabledProfiles.length > 0 && hasRunningBrowser(key)) {
           enabledBrowsers.push({
@@ -175,7 +259,8 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
         }
       }
     });
-
+    
+    // Create threat if any browsers have notifications enabled
     if (enabledBrowsers.length > 0) {
       threats.push({
         type: "browser_notifications_enabled",
@@ -193,13 +278,17 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
       });
     }
   }
-
-  // Check for notification-enabled applications/processes
+  
+  // ============================================================================
+  // APPLICATION NOTIFICATION THREAT DETECTION
+  // ============================================================================
+  // Check for non-browser applications that have notifications enabled
+  // These could potentially send notifications during exam (medium severity)
   if (auditResult.processes && auditResult.processes.length > 0) {
     const enabledApps = auditResult.processes.filter(
       (proc) => proc.notifEnabled && !isProcessNameExcluded(proc.name)
     );
-
+    
     if (enabledApps.length > 0) {
       threats.push({
         type: "notification_apps_enabled",
@@ -217,24 +306,36 @@ function analyzeNotificationThreatsFromAudit(auditResult) {
       });
     }
   }
-
+  
   return threats;
 }
 
-// Deprecated direct WebSocket broadcasting removed. Use EventBus with AppEvent.
+// ============================================================================
+// ENHANCED WEBSOCKET SERVER WITH COMMAND HANDLING
+// ============================================================================
+// Extended LocalServer that handles incoming WebSocket commands from external clients
+// (like TOPIN website) to control the companion app's scanning operations
 
-// Enhanced LocalServer with message logging
+/**
+ * Enhanced LocalServer that extends the base LocalServer with command handling capabilities
+ * Allows external clients to send commands via WebSocket to control scanning operations
+ */
 class LoggingLocalServer extends LocalServer {
   start() {
     const port = super.start();
-    // Optionally handle inbound WS command messages without emitting outbound events here
+    
+    // Handle incoming WebSocket command messages from external clients
     if (this.wss) {
       this.wss.on("connection", (ws) => {
         ws.on("message", async (data) => {
           try {
             const message = JSON.parse(String(data || ""));
+            
+            // Process command messages from external clients
             if (message && message.type === "command") {
               let response = null;
+              
+              // Route commands to appropriate stepped scan manager methods
               switch (message.action) {
                 case "start_stepped_scan":
                   response = await steppedScanManager.startSteppedScan();
@@ -255,17 +356,19 @@ class LoggingLocalServer extends LocalServer {
                   response = steppedScanManager.resetScan();
                   break;
                 default:
-                  response = {
+                  response = { 
                     ok: false,
                     error: `Unknown command: ${message.action}`,
                   };
               }
+              
+              // Send response back to the client
               if (response) {
                 ws.send(
                   JSON.stringify({
                     type: "command_response",
-                    originalCommand: message.action,
-                    result: response,
+                  originalCommand: message.action,
+                  result: response,
                     timestamp: Date.now(),
                   })
                 );
@@ -279,58 +382,88 @@ class LoggingLocalServer extends LocalServer {
   }
 }
 
-// Initialize enhanced LocalServer with logging
+// ============================================================================
+// WEBSOCKET SERVER INITIALIZATION
+// ============================================================================
+// Initialize enhanced LocalServer with command handling capabilities
+// This server accepts connections from TOPIN website and other external clients
 const localServer = new LoggingLocalServer(eventBus, {
   port: 8080, // WebSocket server on port 8080
-  host: "127.0.0.1",
+  host: "127.0.0.1",  // Localhost only for security
 });
 
+// ============================================================================
+// MAIN WINDOW MANAGEMENT
+// ============================================================================
 let mainWindow;
 
+/**
+ * Creates the main Electron window with security-optimized settings
+ * Configures the window for exam monitoring with appropriate security restrictions
+ */
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 960,
     height: 600,
     minWidth: 860,
     minHeight: 540,
-    backgroundColor: "#0b1221",
+    backgroundColor: "#0b1221",  // Dark theme for exam environment
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      webSecurity: false,
+      preload: path.join(__dirname, "preload.js"),  // Secure IPC bridge
+      contextIsolation: true,    // Isolate renderer context for security
+      nodeIntegration: false,    // Disable Node.js in renderer for security
+      sandbox: false,           // Allow preload script access
+      webSecurity: false,       // Disable web security for local file access
     },
   });
 
+  // Load the main UI from renderer process
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
 
-  // Debug helper: open DevTools automatically if env var set
+  // Debug helper: open DevTools automatically if environment variable is set
   if (process.env.TOPIN_OPEN_DEVTOOLS === "1") {
     try {
       mainWindow.webContents.openDevTools({ mode: "detach" });
     } catch {}
   }
 
+  // Clean up window reference when closed
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
 }
 
+// ============================================================================
+// APPLICATION STARTUP SEQUENCE
+// ============================================================================
+/**
+ * Main application startup sequence that initializes all components
+ * Sets up logging, creates main window, starts WebSocket server, and begins monitoring
+ */
 app.whenReady().then(() => {
-  // Route Chromium logs to macOS Console when needed
+  // ============================================================================
+  // LOGGING CONFIGURATION
+  // ============================================================================
+  // Route Chromium logs to macOS Console when debugging is enabled
   if (process.env.TOPIN_ENABLE_LOGGING === "1") {
     try {
       app.commandLine.appendSwitch("enable-logging");
     } catch {}
   }
+  
+  // ============================================================================
+  // WINDOW CREATION
+  // ============================================================================
   // Add a small delay to prevent race conditions on macOS
   setTimeout(() => {
-    createWindow();
+  createWindow();
   }, 100);
 
-  // Start WebSocket server to accept incoming connections
+  // ============================================================================
+  // WEBSOCKET SERVER STARTUP
+  // ============================================================================
+  // Start WebSocket server to accept incoming connections from TOPIN website
   try {
     const serverPort = localServer.start();
     if (serverPort) {
@@ -348,54 +481,91 @@ app.whenReady().then(() => {
     console.error("❌ Error starting WebSocket server:", error);
   }
 
+  // ============================================================================
+  // APPLICATION EVENT HANDLERS
+  // ============================================================================
+  // Handle macOS app activation (when dock icon is clicked)
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 
-  // Auto-start background scan 5 seconds after app is ready
+  // ============================================================================
+  // BACKGROUND MONITORING STARTUP
+  // ============================================================================
+  // Auto-start background security scan worker 5 seconds after app is ready
+  // This provides continuous monitoring for security threats
   try {
     setTimeout(() => {
-      try { startAutoScanWorker(30000); } catch {}
+      try { startAutoScanWorker(30000); } catch {}  // 30-second intervals
     }, 5000);
   } catch {}
 });
 
+// ============================================================================
+// APPLICATION LIFECYCLE MANAGEMENT
+// ============================================================================
+// Handle application shutdown and cleanup
+
+/**
+ * Handle application shutdown when all windows are closed
+ * On macOS, apps typically stay active even when all windows are closed
+ */
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
-    // Clean up WebSocket server
+    // Clean up WebSocket server before quitting
     localServer.stop();
     app.quit();
   }
 });
 
+/**
+ * Handle application shutdown cleanup
+ * Ensures WebSocket server is properly closed before app termination
+ */
 app.on("before-quit", () => {
   // Ensure WebSocket server is closed
   localServer.stop();
 });
 
-// Load malicious signatures
+// ============================================================================
+// MALICIOUS SIGNATURES MANAGEMENT
+// ============================================================================
+// Load and manage security threat signatures for process, port, and domain detection
+
+/**
+ * Global malicious signatures store for security threat detection
+ * Contains patterns for processes, ports, domains, and packages that are considered threats
+ */
 let maliciousSignatures = {
-  processNames: [],
-  ports: [],
-  domains: [],
-  packages: [],
+  processNames: [],  // Malicious process names to detect
+  ports: [],         // Suspicious network ports to monitor
+  domains: [],       // Malicious domains to block
+  packages: [],      // Malicious software packages
 };
+
+// Determine path to malicious signatures file (development vs production)
 const signaturesPath = app.isPackaged
   ? path.join(process.resourcesPath, "data", "malicious.json")
   : path.join(__dirname, "data", "malicious.json");
+
+/**
+ * Loads malicious signatures from JSON file
+ * Normalizes data formats and handles loading errors gracefully
+ */
 function loadSignatures() {
   try {
     const raw = fs.readFileSync(signaturesPath, "utf8");
     const parsed = JSON.parse(raw);
     maliciousSignatures = {
       processNames: (parsed.processNames || []).map((s) =>
-        String(s).toLowerCase()
+        String(s).toLowerCase()  // Normalize to lowercase for case-insensitive matching
       ),
       ports: (parsed.ports || []).map((p) => String(p)),
       domains: (parsed.domains || []).map((d) => String(d).toLowerCase()),
       packages: parsed.packages || [],
     };
   } catch (e) {
+    // Fallback to empty signatures if loading fails
     maliciousSignatures = {
       processNames: [],
       ports: [],
@@ -404,25 +574,44 @@ function loadSignatures() {
     };
   }
 }
+
+// Load signatures on startup
 loadSignatures();
+
+// Watch for signature file changes and reload automatically
 try {
   fs.watch(signaturesPath, { persistent: false }, () => loadSignatures());
 } catch {}
 
+// ============================================================================
+// SYSTEM PROCESS DETECTION UTILITIES
+// ============================================================================
+
+/**
+ * Fallback process detection for POSIX systems (Linux/macOS)
+ * Uses native 'ps' command when systeminformation library fails
+ * Provides basic process information for security scanning
+ * 
+ * @returns {Promise<Array>} Array of process objects with pid, name, cpu, memory, command
+ */
 async function getFallbackProcessesPOSIX() {
   return new Promise((resolve) => {
     exec(
       "ps axo pid,ppid,pcpu,pmem,comm,command --no-headers",
       { timeout: 3000 },
       (err, stdout) => {
-        if (err || !stdout) return resolve([]);
+      if (err || !stdout) return resolve([]);
+        
         const rows = stdout.trim().split("\n");
-        const procs = [];
-        for (const line of rows) {
-          const parts = line.trim().split(/\s+/);
-          if (parts.length < 6) continue;
-          const [pid, ppid, pcpu, pmem, comm, ...cmdParts] = parts;
+      const procs = [];
+        
+      for (const line of rows) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 6) continue;
+          
+        const [pid, ppid, pcpu, pmem, comm, ...cmdParts] = parts;
           const command = cmdParts.join(" ");
+          
           procs.push({
             pid: parseInt(pid) || 0,
             ppid: parseInt(ppid) || 0,
@@ -431,17 +620,25 @@ async function getFallbackProcessesPOSIX() {
             name: comm || "unknown",
             command,
           });
-        }
-        resolve(procs);
+      }
+      resolve(procs);
       }
     );
   });
 }
 
-// Windows-specific active process filtering is handled inside ExamModeService; no filtering here
+// Note: Windows-specific active process filtering is handled inside ExamModeService
 
+/**
+ * Comprehensive system scanning function
+ * Gathers running processes, system load, and platform information
+ * Uses systeminformation library with fallback to native commands
+ * 
+ * @returns {Promise<Object>} System report with processes, load, platform info
+ */
 async function scanSystem() {
   try {
+    // Parallel execution of system information gathering
     const [processes, currentLoad] = await Promise.all([
       si.processes().catch((err) => {
         console.warn("systeminformation.processes() failed:", err);
@@ -452,6 +649,8 @@ async function scanSystem() {
         return { currentLoad: 0 };
       }),
     ]);
+    
+    // Normalize process data format
     let running = (processes.list || []).map((p) => ({
       pid: p.pid,
       name: p.name || "unknown",
@@ -461,9 +660,11 @@ async function scanSystem() {
       mem: Number.isFinite(p.pmem) ? p.pmem : 0,
       command: p.command || "",
     }));
-    if (running.length === 0) {
-      try {
-        const fb = await getFallbackProcessesPOSIX();
+    
+    // Fallback to native 'ps' command if systeminformation fails
+  if (running.length === 0) {
+    try {
+      const fb = await getFallbackProcessesPOSIX();
         if (fb.length)
           running = fb.map((p) => ({
             pid: p.pid,
@@ -474,10 +675,13 @@ async function scanSystem() {
             mem: Number.isFinite(p.pmem) ? p.pmem : 0,
             command: p.command,
           }));
-      } catch {}
-    }
+    } catch {}
+  }
+    
+    // Sort processes by CPU usage (highest first) and limit to 500 processes
     running.sort((a, b) => (b.cpu || 0) - (a.cpu || 0));
-    const runningLimited = running.slice(0, 500);
+  const runningLimited = running.slice(0, 500);
+    
     return {
       platform: os.platform(),
       arch: os.arch(),
@@ -492,21 +696,48 @@ async function scanSystem() {
   }
 }
 
+// ============================================================================
+// IPC HANDLERS - NOTIFICATION SERVICE
+// ============================================================================
+// IPC handlers for notification and DND status management
+
+/**
+ * Get current notification status from NotificationService
+ * Returns system notification settings and DND state
+ */
 ipcMain.handle("app:getNotificationStatus", async () =>
   notificationService.getNotificationStatus()
 );
+
+/**
+ * Get current focus/DND status from NotificationService
+ * Returns whether focus mode is active
+ */
 ipcMain.handle("app:getFocusStatus", async () =>
   notificationService.getFocusStatus()
 );
+
+/**
+ * Open system notification settings
+ * Launches OS-specific notification settings dialog
+ */
 ipcMain.handle("app:openNotificationSettings", async () =>
   notificationService.openNotificationSettings()
 );
+/**
+ * Comprehensive notification audit handler
+ * Performs notification/DND audit and emits appropriate security events
+ * Coordinates with security scanning for complete system check
+ */
 ipcMain.handle("app:auditNotifications", async (_evt, _providedScanId) => {
   try {
     const scanId = Date.now();
     const audit = await notificationService.auditNotifications();
     const notificationThreats = analyzeNotificationThreatsFromAudit(audit);
-
+    
+    // ============================================================================
+    // NOTIFICATION SECURITY RULE ENFORCEMENT
+    // ============================================================================
     // Rule 1: If DND is not active on any OS → emit ACTIVE_NOTIFICATION_SERVICE
     const sys = audit.system || {};
     const dndOn = String(sys.status || "").toLowerCase() === "disabled"; // disabled => DND ON
@@ -517,7 +748,11 @@ ipcMain.handle("app:auditNotifications", async (_evt, _providedScanId) => {
       : [];
     const windowsBgDetected = process.platform === "win32" && bgApps.length > 0;
 
+    // ============================================================================
+    // EVENT EMISSION LOGIC
+    // ============================================================================
     if (!dndOn || windowsBgDetected) {
+      // Security violation detected - emit threat event
       try {
         eventBus.emitEvent(AppEvent.ACTIVE_NOTIFICATION_SERVICE, {
           scanId,
@@ -527,25 +762,26 @@ ipcMain.handle("app:auditNotifications", async (_evt, _providedScanId) => {
         });
       } catch {}
     } else {
-      // Both conditions passed → no notification event
-      // Pair with suspicious completion (from app:scan) in a time window
+      // Notification check passed - coordinate with security scan completion
       sequentialCompletion.notifComplete = true;
       if (
         sequentialCompletion.notifComplete &&
         sequentialCompletion.suspiciousComplete
       ) {
+        // Both notification and security checks passed
         try {
           eventBus.emitEvent(AppEvent.NO_ISSUES_DETECTED, {
-            scanId: Date.now(),
+          scanId: Date.now(),
             flow: "sequential_checks",
-          });
+        });
         } catch {}
         clearSequentialCompletion();
       } else {
+        // Wait for security scan to complete
         armSequentialCompletionExpiry();
       }
     }
-
+    
     // Include threats in return payload for renderer consumption
     return { ok: true, threats: notificationThreats, ...audit };
   } catch (e) {
@@ -553,6 +789,10 @@ ipcMain.handle("app:auditNotifications", async (_evt, _providedScanId) => {
   }
 });
 
+/**
+ * Open browser-specific notification guide
+ * Launches external browser help pages for notification settings
+ */
 ipcMain.handle("app:openGuide", async (_evt, kind) => {
   const { shell } = require("electron");
   const guides = {
@@ -569,14 +809,27 @@ ipcMain.handle("app:openGuide", async (_evt, kind) => {
   }
 });
 
-// Stepped scanning system with user intervention
+// ============================================================================
+// STEPPED SCAN MANAGER - USER-GUIDED SECURITY SCANNING
+// ============================================================================
+/**
+ * Manages stepped security scanning with user intervention capabilities
+ * Provides a two-step scanning process: notification audit → security scan
+ * Allows users to resolve issues between steps and retry failed steps
+ */
 class SteppedScanManager {
   constructor() {
     this.currentScan = null;
-    this.scanState = "idle"; // 'idle', 'step1_notification', 'step1_blocked', 'step2_security', 'step2_blocked', 'completed'
+    // Scan states: 'idle', 'step1_notification', 'step1_blocked', 'step2_security', 'step2_blocked', 'completed'
+    this.scanState = "idle";
     this.detections = { notifications: [], security: [] };
   }
 
+  /**
+   * Initiates a new stepped security scan
+   * Validates scan state and begins with notification audit (Step 1)
+   * @returns {Promise<Object>} Scan result or error
+   */
   async startSteppedScan() {
     console.log("🚀 startSteppedScan() method called");
     console.log(`🚀 Current scan state: ${this.scanState}`);
@@ -593,7 +846,7 @@ class SteppedScanManager {
       return { ok: false, error: "Scan already in progress" };
     }
 
-    // Reset any previous scan state
+    // Initialize new scan session
     this.currentScan = {
       id: Date.now(),
       startTime: Date.now(),
@@ -617,17 +870,26 @@ class SteppedScanManager {
     return this.executeStep1();
   }
 
+  /**
+   * Executes Step 1: Notification Audit
+   * Checks DND status and Windows background apps
+   * Blocks scan if violations are detected, otherwise proceeds to Step 2
+   * @returns {Promise<Object>} Step 1 result or proceeds to Step 2
+   */
   async executeStep1() {
     try {
       console.log("📱 Auditing notification settings...");
 
+      // Perform comprehensive notification audit
       const auditResult = await notificationService.auditNotifications();
       const notificationThreats = analyzeNotificationThreatsFromAudit(auditResult);
       this.detections.notifications = Array.isArray(notificationThreats)
         ? notificationThreats
         : [];
 
-      // Step rule application:
+      // ============================================================================
+      // NOTIFICATION SECURITY GATE EVALUATION
+      // ============================================================================
       const sys = auditResult.system || {};
       const dndOn = String(sys.status || "").toLowerCase() === "disabled";
       const bgApps = Array.isArray(auditResult.backgroundAppsWindows)
@@ -636,10 +898,15 @@ class SteppedScanManager {
       const windowsBgDetected = process.platform === "win32" && bgApps.length > 0;
 
       if (!dndOn || windowsBgDetected) {
+        // ============================================================================
+        // NOTIFICATION VIOLATIONS DETECTED - BLOCK SCAN
+        // ============================================================================
         console.log(
           `⚠️ Notification gating: dndOn=${dndOn}, windowsBgDetected=${windowsBgDetected} - SCAN BLOCKED`
         );
         this.scanState = "step1_blocked";
+        
+        // Emit security threat event
         try {
           eventBus.emitEvent(AppEvent.ACTIVE_NOTIFICATION_SERVICE, {
             scanId: this.currentScan.id,
@@ -649,6 +916,7 @@ class SteppedScanManager {
           });
         } catch {}
 
+        // Emit internal stage event
         eventBus.emitStage("SCAN_STEP1_BLOCKED", {
           scanId: this.currentScan.id,
           detections: [],
@@ -671,9 +939,10 @@ class SteppedScanManager {
           canProceed: false,
         };
       } else {
+        // ============================================================================
+        // NOTIFICATION CHECK PASSED - PROCEED TO STEP 2
+        // ============================================================================
         console.log("✅ Notification gate passed, proceeding to Step 2");
-
-        // No outbound event; proceed internally
 
         eventBus.emitStage("SCAN_STEP1_COMPLETED", {
           scanId: this.currentScan.id,
@@ -690,6 +959,12 @@ class SteppedScanManager {
     }
   }
 
+  /**
+   * Executes Step 2: Security and Threat Scan
+   * Performs comprehensive security scanning for malicious processes, ports, and domains
+   * Blocks scan if threats are detected, otherwise completes the scan
+   * @returns {Promise<Object>} Step 2 result or scan completion
+   */
   async executeStep2() {
     try {
       this.scanState = "step2_security";
@@ -703,6 +978,9 @@ class SteppedScanManager {
         stepName: "security_scan",
       });
 
+      // ============================================================================
+      // PARALLEL SECURITY SCANNING
+      // ============================================================================
       const systemReport = await scanSystem();
       const securityThreats = await securityService.runAllChecks({
         processNames: maliciousSignatures.processNames,
@@ -710,12 +988,15 @@ class SteppedScanManager {
         domains: maliciousSignatures.domains,
       });
 
-      // runAllChecks returns array directly, not object with threats property
+      // Store security detection results
       this.detections.security = Array.isArray(securityThreats)
         ? securityThreats
         : [];
 
       if (securityThreats && securityThreats.length > 0) {
+        // ============================================================================
+        // SECURITY THREATS DETECTED - BLOCK SCAN
+        // ============================================================================
         console.log(`⚠️ Found ${securityThreats.length} security threats`);
         this.scanState = "step2_blocked";
 
@@ -737,8 +1018,10 @@ class SteppedScanManager {
           nextAction: "user_must_resolve_security_threats",
         };
       } else {
+        // ============================================================================
+        // NO SECURITY THREATS - COMPLETE SCAN
+        // ============================================================================
         console.log("✅ No security threats detected");
-
         return this.completeScan(systemReport);
       }
     } catch (e) {
@@ -748,6 +1031,11 @@ class SteppedScanManager {
     }
   }
 
+  /**
+   * Retry Step 1: Notification Audit
+   * Allows user to retry notification check after resolving issues
+   * @returns {Promise<Object>} Retry result
+   */
   async retryStep1() {
     if (this.scanState !== "step1_blocked") {
       return { ok: false, error: "Cannot retry step 1 - not in blocked state" };
@@ -763,6 +1051,11 @@ class SteppedScanManager {
     return this.executeStep1();
   }
 
+  /**
+   * Retry Step 2: Security Scan
+   * Allows user to retry security scan after resolving threats
+   * @returns {Promise<Object>} Retry result
+   */
   async retryStep2() {
     if (this.scanState !== "step2_blocked") {
       return { ok: false, error: "Cannot retry step 2 - not in blocked state" };
@@ -772,10 +1065,19 @@ class SteppedScanManager {
     return this.executeStep2();
   }
 
+  /**
+   * Completes the stepped scan and generates final report
+   * Emits completion events and cleans up scan state
+   * @param {Object} systemReport - Optional system report from Step 2
+   * @returns {Promise<Object>} Final scan completion result
+   */
   async completeScan(systemReport = null) {
     this.scanState = "completed";
     const endTime = Date.now();
 
+    // ============================================================================
+    // FINAL REPORT GENERATION
+    // ============================================================================
     const finalReport = {
       scanId: this.currentScan.id,
       startTime: this.currentScan.startTime,
@@ -793,6 +1095,9 @@ class SteppedScanManager {
       },
     };
 
+    // ============================================================================
+    // COMPLETION EVENT EMISSION
+    // ============================================================================
     try {
       eventBus.emitEvent(AppEvent.NO_ISSUES_DETECTED, {
         scanId: finalReport.scanId,
@@ -813,6 +1118,10 @@ class SteppedScanManager {
     };
   }
 
+  /**
+   * Get current scan status and state information
+   * @returns {Object} Current scan status with state, detections, and capabilities
+   */
   getScanStatus() {
     return {
       scanActive: this.currentScan !== null,
@@ -832,6 +1141,11 @@ class SteppedScanManager {
     };
   }
 
+  /**
+   * Reset scan state to idle
+   * Clears all scan data and returns to initial state
+   * @returns {Object} Reset confirmation
+   */
   resetScan() {
     console.log("🔄 Resetting scan state");
     this.currentScan = null;
@@ -846,6 +1160,11 @@ class SteppedScanManager {
     return { ok: true, message: "Scan state reset successfully" };
   }
 
+  /**
+   * Cancel current scan
+   * Stops scan execution and cleans up state
+   * @returns {Object} Cancellation confirmation
+   */
   cancelScan() {
     if (this.currentScan) {
       eventBus.emitStage("STEPPED_SCAN_CANCELLED", {
@@ -862,7 +1181,15 @@ class SteppedScanManager {
   }
 }
 
-// IPC to list categorized threat applications (installed, running, services, browser extensions)
+// ============================================================================
+// IPC HANDLERS - THREAT APPLICATION LISTING
+// ============================================================================
+
+/**
+ * List categorized threat applications across all platforms
+ * Returns installed apps, running processes, services, and browser extensions
+ * that match threat patterns (messaging, remote control, virtualization, screen capture)
+ */
 ipcMain.handle("app:listThreatApps", async () => {
   try {
     const res = await securityService.listThreatApplications();
@@ -872,9 +1199,23 @@ ipcMain.handle("app:listThreatApps", async () => {
   }
 });
 
+// ============================================================================
+// STEPPED SCAN MANAGER INSTANCE
+// ============================================================================
 const steppedScanManager = new SteppedScanManager();
 
-// Legacy scan function for compatibility with renderer.js
+// ============================================================================
+// LEGACY SCAN FUNCTIONS
+// ============================================================================
+
+/**
+ * Legacy scan function for compatibility with existing UI
+ * Performs basic security scanning without stepped scan complexity
+ * Used by renderer.js for simple security checks
+ * 
+ * @param {Object} options - Scan options (skipEvents, scanId, scanType)
+ * @returns {Promise<Object>} Scan result with system report and threats
+ */
 async function legacyScan(options = {}) {
   try {
     const {
@@ -885,8 +1226,9 @@ async function legacyScan(options = {}) {
 
     console.log("🔍 Running legacy scan (for UI compatibility)");
 
-    // No outbound events here; EventBus-only policy
-
+    // ============================================================================
+    // PARALLEL SECURITY SCANNING
+    // ============================================================================
     const systemReport = await scanSystem();
     const threats = await securityService.runAllChecks({
       processNames: maliciousSignatures.processNames,
@@ -896,8 +1238,6 @@ async function legacyScan(options = {}) {
 
     // Ensure threats is always an array
     systemReport.threats = Array.isArray(threats) ? threats : [];
-
-    // No outbound events here; EventBus-only policy
 
     console.log(
       `✅ Legacy scan completed. Found ${systemReport.threats.length} threats`
@@ -909,14 +1249,20 @@ async function legacyScan(options = {}) {
   }
 }
 
-// Function to perform complete system check (legacy scan + notification audit)
+/**
+ * Performs complete system check combining notification audit and security scan
+ * Coordinates both checks and emits appropriate events based on results
+ * Used for comprehensive system validation
+ * 
+ * @returns {Promise<Object>} Combined results from both notification and security checks
+ */
 async function completeSystemCheck() {
   try {
     const scanId = Date.now();
 
-    // No outbound events at start
-
-    // Step 1: Notification audit
+    // ============================================================================
+    // STEP 1: NOTIFICATION AUDIT
+    // ============================================================================
     const notificationResult = await notificationService.auditNotifications();
     const notificationThreats =
       analyzeNotificationThreatsFromAudit(notificationResult);
@@ -932,7 +1278,9 @@ async function completeSystemCheck() {
       } catch {}
     }
 
-    // Step 2: Security scan (skip events - we'll send them ourselves)
+    // ============================================================================
+    // STEP 2: SECURITY SCAN
+    // ============================================================================
     const securityResult = await legacyScan({
       skipEvents: true,
       scanId: scanId,
@@ -944,9 +1292,9 @@ async function completeSystemCheck() {
       securityResult.report.threats &&
       securityResult.report.threats.length > 0;
 
-    // No outbound events for security threats in this flow per allowed policy
-
-    // Send SYSTEM_CHECK_SUCCESSFUL only if both completion events were sent
+    // ============================================================================
+    // COMPLETION EVENT COORDINATION
+    // ============================================================================
     const sentNotificationComplete = !hasNotificationThreats;
     const sentSuspiciousComplete = securityOk && !hasSecurityThreats;
     if (sentNotificationComplete && sentSuspiciousComplete) {
@@ -958,7 +1306,9 @@ async function completeSystemCheck() {
       } catch {}
     }
 
-    // Return combined results
+    // ============================================================================
+    // COMBINED RESULTS
+    // ============================================================================
     return {
       ok: true,
       security: securityOk
@@ -981,13 +1331,23 @@ async function completeSystemCheck() {
   }
 }
 
-// Updated IPC handlers for stepped scanning
-// Track completion state for sequential UI flow (no strict single-session requirement)
+// ============================================================================
+// SEQUENTIAL COMPLETION TRACKING
+// ============================================================================
+// Track completion state for sequential UI flow coordination
+// Allows notification and security checks to be performed independently
+// but coordinates their completion for final event emission
+
 const sequentialCompletion = {
-  notifComplete: false,
-  suspiciousComplete: false,
-  timer: null,
+  notifComplete: false,      // Notification audit completion status
+  suspiciousComplete: false, // Security scan completion status
+  timer: null,              // Auto-expiry timer
 };
+
+/**
+ * Clear sequential completion state
+ * Resets both completion flags and clears any pending timer
+ */
 function clearSequentialCompletion() {
   sequentialCompletion.notifComplete = false;
   sequentialCompletion.suspiciousComplete = false;
@@ -998,6 +1358,12 @@ function clearSequentialCompletion() {
     sequentialCompletion.timer = null;
   }
 }
+
+/**
+ * Arm sequential completion expiry timer
+ * Sets a 20-second timer to auto-expire completion state
+ * Prevents indefinite waiting if one check never completes
+ */
 function armSequentialCompletionExpiry() {
   if (sequentialCompletion.timer) {
     try {
@@ -1009,20 +1375,32 @@ function armSequentialCompletionExpiry() {
   }, 20000); // auto-expire after 20s if the other half doesn't arrive
 }
 
-ipcMain.handle("app:scan", async (_evt, _providedScanId) => {
+// ============================================================================
+// IPC HANDLERS - SCANNING OPERATIONS
+// ============================================================================
 
+/**
+ * Legacy scan handler for UI compatibility
+ * Performs basic security scan and coordinates with notification completion
+ */
+ipcMain.handle("app:scan", async (_evt, _providedScanId) => {
   console.log('app:scan    =========================>  ')
+  
   // Use legacy scan for compatibility with existing UI
   const res = await legacyScan({});
+  
   try {
     if (res && res.ok && res.report && Array.isArray(res.report.threats)) {
       const hasThreats = res.report.threats.length > 0;
+      
       if (!hasThreats) {
+        // No security threats - coordinate with notification completion
         sequentialCompletion.suspiciousComplete = true;
         if (
           sequentialCompletion.notifComplete &&
           sequentialCompletion.suspiciousComplete
         ) {
+          // Both checks completed successfully
           try {
             eventBus.emitEvent(AppEvent.NO_ISSUES_DETECTED, {
               scanId: Date.now(),
@@ -1031,9 +1409,11 @@ ipcMain.handle("app:scan", async (_evt, _providedScanId) => {
           } catch {}
           clearSequentialCompletion();
         } else {
+          // Wait for notification check to complete
           armSequentialCompletionExpiry();
         }
       } else {
+        // Security threats detected - clear completion state
         clearSequentialCompletion();
       }
     }
@@ -1041,42 +1421,84 @@ ipcMain.handle("app:scan", async (_evt, _providedScanId) => {
   return res;
 });
 
+/**
+ * Complete system check handler
+ * Performs comprehensive security and notification validation
+ */
 ipcMain.handle("app:completeSystemCheck", async () => {
   console.log('app:completeSystemCheck ======================>  ')
   // New comprehensive check that coordinates both security and notifications
   return completeSystemCheck();
 });
 
+/**
+ * Start stepped scan handler
+ * Initiates user-guided two-step security scanning process
+ */
 ipcMain.handle("app:startSteppedScan", async () => {
   return steppedScanManager.startSteppedScan();
 });
 
+/**
+ * Retry Step 1 handler
+ * Allows user to retry notification audit after resolving issues
+ */
 ipcMain.handle("app:retryStep1", async () => {
   return steppedScanManager.retryStep1();
 });
 
+/**
+ * Retry Step 2 handler
+ * Allows user to retry security scan after resolving threats
+ */
 ipcMain.handle("app:retryStep2", async () => {
   return steppedScanManager.retryStep2();
 });
 
+/**
+ * Get scan status handler
+ * Returns current scan state and progress information
+ */
 ipcMain.handle("app:getScanStatus", async () => {
   return steppedScanManager.getScanStatus();
 });
 
+/**
+ * Cancel scan handler
+ * Stops current scan and cleans up state
+ */
 ipcMain.handle("app:cancelScan", async () => {
   return steppedScanManager.cancelScan();
 });
 
+/**
+ * Reset scan handler
+ * Resets scan state to idle
+ */
 ipcMain.handle("app:resetScan", async () => {
   return steppedScanManager.resetScan();
 });
 
-// Auto-scan worker (Node worker thread) to keep main thread responsive
+// ============================================================================
+// AUTO-SCAN WORKER MANAGEMENT
+// ============================================================================
+// Background worker thread for continuous security monitoring
+// Keeps main thread responsive while performing periodic security scans
+
 const { Worker } = require("worker_threads");
 let autoScanWorker = null;
 
+/**
+ * Start auto-scan worker for continuous background monitoring
+ * Creates a worker thread that performs periodic security scans
+ * 
+ * @param {number} intervalMs - Scan interval in milliseconds (default: 30000)
+ * @returns {boolean} Success status
+ */
 function startAutoScanWorker(intervalMs = 30000) {
   if (autoScanWorker) return true;
+  
+  // Determine worker path based on packaging status
   const workerPath = app.isPackaged
     ? path.join(
         process.resourcesPath,
@@ -1085,9 +1507,13 @@ function startAutoScanWorker(intervalMs = 30000) {
         "autoScanWorker.js"
       )
     : path.join(__dirname, "workers", "autoScanWorker.js");
+    
+  // Create worker thread
   autoScanWorker = new Worker(workerPath, {
     workerData: null,
   });
+  
+  // Handle worker messages
   autoScanWorker.on("message", (msg) => {
     if (!msg) return;
     if (msg.type === "result") {
@@ -1104,12 +1530,16 @@ function startAutoScanWorker(intervalMs = 30000) {
       }
     }
   });
+  
+  // Handle worker errors and cleanup
   autoScanWorker.on("error", () => {
     /* noop: keep app running */
   });
   autoScanWorker.on("exit", () => {
     autoScanWorker = null;
   });
+  
+  // Start worker with configuration
   autoScanWorker.postMessage({
     type: "start",
     intervalMs,
@@ -1122,6 +1552,11 @@ function startAutoScanWorker(intervalMs = 30000) {
   return true;
 }
 
+/**
+ * Stop auto-scan worker
+ * Terminates the background worker thread and cleans up resources
+ * @returns {boolean} Success status
+ */
 function stopAutoScanWorker() {
   if (!autoScanWorker) return true;
   try {
@@ -1134,6 +1569,10 @@ function stopAutoScanWorker() {
   return true;
 }
 
+/**
+ * Start auto-scan worker IPC handler
+ * Allows renderer to start background monitoring
+ */
 ipcMain.handle("app:autoScanStart", async (_evt, intervalMs) => {
   try {
     return startAutoScanWorker(Number(intervalMs) || 30000);
@@ -1142,6 +1581,10 @@ ipcMain.handle("app:autoScanStart", async (_evt, intervalMs) => {
   }
 });
 
+/**
+ * Stop auto-scan worker IPC handler
+ * Allows renderer to stop background monitoring
+ */
 ipcMain.handle("app:autoScanStop", async () => {
   try {
     return stopAutoScanWorker();
@@ -1150,7 +1593,14 @@ ipcMain.handle("app:autoScanStop", async () => {
   }
 });
 
-// IPC handlers for WebSocket communication
+// ============================================================================
+// IPC HANDLERS - WEBSOCKET COMMUNICATION
+// ============================================================================
+
+/**
+ * Send data to WebSocket clients
+ * Broadcasts data to all connected WebSocket clients via EventBus
+ */
 ipcMain.handle("app:sendToClients", async (_evt, data) => {
   try {
     eventBus.emitEvent("FROM_APP", data);
@@ -1161,15 +1611,26 @@ ipcMain.handle("app:sendToClients", async (_evt, data) => {
   }
 });
 
+/**
+ * Get WebSocket server status
+ * Returns server status, port, and endpoint information
+ */
 ipcMain.handle("app:getServerStatus", async () => {
   return {
     running: localServer.server && localServer.server.listening,
     port: localServer.port,
     endpoint: `ws://localhost:${localServer.port}/ws`,
   };
-});
+}); 
 
-// Permission preflight for browser tab access
+// ============================================================================
+// IPC HANDLERS - BROWSER TAB ACCESS & TESTING
+// ============================================================================
+
+/**
+ * Check browser tab access permissions
+ * Verifies if the app has permission to access browser tabs for monitoring
+ */
 ipcMain.handle("app:checkBrowserTabPermissions", async () => {
   try {
     const res = await securityService.checkBrowserTabAccessPermissions();
@@ -1179,7 +1640,10 @@ ipcMain.handle("app:checkBrowserTabPermissions", async () => {
   }
 });
 
-// Debug: Test tab detection
+/**
+ * Test tab detection for specific browser
+ * Debug function to test tab detection capabilities
+ */
 ipcMain.handle("app:testTabDetection", async (_evt, browserName) => {
   try {
     const res = await securityService.testTabDetection(browserName);
@@ -1189,7 +1653,14 @@ ipcMain.handle("app:testTabDetection", async (_evt, browserName) => {
   }
 });
 
-// Logging control
+// ============================================================================
+// IPC HANDLERS - LOGGING CONTROL
+// ============================================================================
+
+/**
+ * Set logging for all services
+ * Enables/disables logging for SecurityService and NotificationService
+ */
 ipcMain.handle("app:setLogging", async (_evt, enabled) => {
   try {
     securityService.setLogging(enabled);
@@ -1202,6 +1673,10 @@ ipcMain.handle("app:setLogging", async (_evt, enabled) => {
   }
 });
 
+/**
+ * Get current logging status
+ * Returns logging status from SecurityService
+ */
 ipcMain.handle("app:getLoggingStatus", async () => {
   try {
     const enabled = securityService.getLoggingStatus();
@@ -1214,7 +1689,10 @@ ipcMain.handle("app:getLoggingStatus", async () => {
   }
 });
 
-// NotificationService-only logging controls
+/**
+ * Set NotificationService-only logging
+ * Controls logging specifically for NotificationService
+ */
 ipcMain.handle("app:setNotificationLogging", async (_evt, enabled) => {
   try {
     notificationService.setLogging(!!enabled);
@@ -1224,6 +1702,10 @@ ipcMain.handle("app:setNotificationLogging", async (_evt, enabled) => {
   }
 });
 
+/**
+ * Get NotificationService logging status
+ * Returns logging status specifically from NotificationService
+ */
 ipcMain.handle("app:getNotificationLoggingStatus", async () => {
   try {
     const enabled = !!notificationService.getLoggingStatus();
@@ -1233,7 +1715,14 @@ ipcMain.handle("app:getNotificationLoggingStatus", async () => {
   }
 });
 
-// List only actively sharing tabs in currently open browsers
+// ============================================================================
+// IPC HANDLERS - SCREEN SHARING DETECTION
+// ============================================================================
+
+/**
+ * List actively sharing tabs in currently open browsers
+ * Detects browser tabs that are currently sharing screen content
+ */
 ipcMain.handle("app:listActiveSharingTabs", async () => {
   try {
     const tabs = await securityService.getActiveScreenSharingTabs();
@@ -1243,9 +1732,20 @@ ipcMain.handle("app:listActiveSharingTabs", async () => {
   }
 });
 
-// Exam mode: allow only one browser family and the companion app; flag the rest
+// ============================================================================
+// IPC HANDLERS - EXAM MODE CHECK
+// ============================================================================
+
+/**
+ * Exam mode security check
+ * Allows only one browser family and the companion app; flags all other processes
+ * Uses different detection logic for Linux vs Windows/macOS
+ */
 ipcMain.handle("app:runExamModeCheck", async (_evt, options) => {
   try {
+    // ============================================================================
+    // COMPANION APP IDENTIFICATION
+    // ============================================================================
     const pkg = require("./package.json");
     const appName = String(pkg.name || "").toLowerCase();
     const exeBase = (process.execPath || "").split(/[\\/]/).pop().toLowerCase();
@@ -1260,6 +1760,10 @@ ipcMain.handle("app:runExamModeCheck", async (_evt, options) => {
       preferredBrowserFamily: null,
     };
     const opts = Object.assign({}, defaults, options || {});
+    
+    // ============================================================================
+    // LINUX PLATFORM: SECURITY SERVICE ROUTING
+    // ============================================================================
     // On Linux, route to SecurityService for threat/malicious detection instead of ExamModeService
     if (process.platform === "linux") {
       const [systemReport, threats] = await Promise.all([
