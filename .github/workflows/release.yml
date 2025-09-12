@@ -33,23 +33,22 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          if ($env:WINDOWS_CERT_PFX) {
+          if ("${{ secrets.WINDOWS_CERT_PFX }}" -ne "") {
             Write-Host "Decoding certificate from GitHub Secret..."
-            $pfxBytes = [System.Convert]::FromBase64String($env:WINDOWS_CERT_PFX)
+            $pfxBytes = [System.Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_PFX }}")
             [System.IO.File]::WriteAllBytes("windows-certificate.pfx", $pfxBytes)
-          } else {
+            echo "CSC_LINK=$PWD\\windows-certificate.pfx" >> $env:GITHUB_ENV
+            echo "CSC_KEY_PASSWORD=${{ secrets.WINDOWS_CERT_PASS }}" >> $env:GITHUB_ENV
+          }
+          else {  
             Write-Host "No secret provided, generating self-signed test certificate..."
             $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=TOPIN-Companion Test" -CertStoreLocation "Cert:\CurrentUser\My"
             $pwd = ConvertTo-SecureString -String "testpassword" -Force -AsPlainText
             Export-PfxCertificate -Cert $cert -FilePath "windows-certificate.pfx" -Password $pwd
+            echo "CSC_LINK=$PWD\\windows-certificate.pfx" >> $env:GITHUB_ENV
+            echo "CSC_KEY_PASSWORD=testpassword" >> $env:GITHUB_ENV
           }
 
-      - name: Set Windows signing environment
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          echo "CSC_LINK=windows-certificate.pfx" >> $env:GITHUB_ENV
-          echo "CSC_KEY_PASSWORD=$env:WINDOWS_CERT_PASS" >> $env:GITHUB_ENV
           
 
       # Linux build
