@@ -32,8 +32,10 @@ jobs:
       # --- Windows signing setup ---
       - name: Decode Windows certificate
         if: matrix.os == 'windows-latest'
+        shell: pwsh
         run: |
-          echo "${{ secrets.WINDOWS_CERT_PFX }}" | base64 -d > windows-certificate.pfx
+          $pfxBytes = [System.Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_PFX }}")
+          [System.IO.File]::WriteAllBytes("windows-certificate.pfx", $pfxBytes)
 
       - name: Set Windows signing env
         if: matrix.os == 'windows-latest'
@@ -51,6 +53,16 @@ jobs:
       - name: Build Windows app
         if: matrix.os == 'windows-latest'
         run: yarn electron-builder --windows --publish=never
+
+      # Verify Windows signing
+      - name: Verify Windows signature
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -Recurse -Include *.exe,*.msi | ForEach-Object {
+            Write-Host "Verifying signature for $($_.FullName)"
+            signtool verify /pa /v $_.FullName
+          }
 
       # macOS build
       - name: Build macOS app
