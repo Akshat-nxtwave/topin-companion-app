@@ -29,12 +29,25 @@ jobs:
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
+      # --- Windows signing setup ---
+      - name: Decode Windows certificate
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "${{ secrets.WINDOWS_CERT_PFX }}" | base64 -d > windows-certificate.pfx
+
+      - name: Set Windows signing env
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          echo "CSC_LINK=windows-certificate.pfx" >> $env:GITHUB_ENV
+          echo "CSC_KEY_PASSWORD=${{ secrets.WINDOWS_CERT_PASS }}" >> $env:GITHUB_ENV
+
       # Linux build
       - name: Build Linux app
         if: matrix.os == 'ubuntu-latest'
         run: yarn electron-builder --linux --publish=never
 
-      # Windows build
+      # Windows build (signed)
       - name: Build Windows app
         if: matrix.os == 'windows-latest'
         run: yarn electron-builder --windows --publish=never
@@ -84,5 +97,5 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: TOPIN-Companion-${{ matrix.os }}
+          name: TOPIN-Companion
           path: dist/**
