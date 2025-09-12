@@ -1,6 +1,6 @@
 {
   "name": "companion-topin",
-  "version": "1.0.5",
+  "version": "1.0.1",
   "description": "Minimal cross-platform companion app (Electron v28)",
   "main": "main.js",
   "author": {

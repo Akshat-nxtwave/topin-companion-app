@@ -33,7 +33,7 @@ autoUpdater.autoDownload = false; // This will handle downloads manually for bet
 autoUpdater.autoInstallOnAppQuit = false; // This will handle manual installation for better control
 
 // TEMPORARY BYPASS: Disable auto-updater completely for testing
-const DISABLE_AUTO_UPDATER = true; // Set to false to re-enable
+const DISABLE_AUTO_UPDATER = false; // Set to false to re-enable
 
 // Disable code signature verification for testing (since we're not code signing)
 // Try multiple approaches to disable signature verification
