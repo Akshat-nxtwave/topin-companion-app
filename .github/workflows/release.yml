@@ -61,10 +61,30 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: yarn electron-builder --windows --publish=never
 
+      # --- macOS signing setup ---
+      - name: Prepare macOS signing certificate
+        if: matrix.os == 'macos-latest'
+        run: echo "$MAC_CERT_P12" | base64 --decode > mac-certificate.p12
+        shell: bash
+
+      - name: Import macOS signing certificate
+        if: matrix.os == 'macos-latest'
+        run: |
+          security create-keychain -p "" build.keychain
+          security import mac-certificate.p12 -k build.keychain -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign
+          security set-keychain-settings -lut 21600 build.keychain
+          security list-keychains -s build.keychain
+          security unlock-keychain -p "" build.keychain
+        shell: bash
+
+
       # macOS build
       - name: Build macOS app
         if: matrix.os == 'macos-latest'
         run: yarn electron-builder --mac --publish=never
+        env:
+          CSC_LINK: mac-certificate.p12
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
 
       # Upload artifacts
       - name: Upload artifacts
