@@ -1,6 +1,6 @@
 {
   "name": "companion-topin",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Minimal cross-platform companion app (Electron v28)",
   "main": "main.js",
   "author": {
@@ -11,25 +11,14 @@
   "scripts": {
     "start": "ELECTRON_DISABLE_SANDBOX=1 electron .",
     "dev": "electron .",
-    "start:win": "electron .",
     "pack": "electron-builder --dir",
     "pack:win": "electron-builder --win --dir",
     "dist": "electron-builder",
-    "build": "yarn build:all",
     "build:all": "electron-builder -mwl --publish=never",
     "build:linux": "electron-builder --linux",
-    "build:linux:local": "electron-builder --linux --publish never",
-    "build:linux:appimage": "electron-builder --linux AppImage --publish never",
-    "build:linux:deb": "electron-builder --linux deb --publish never",
     "build:win": "electron-builder --win",
-    "dist:win": "electron-builder --win --publish never",
-    "build:win:zip": "electron-builder --win zip --publish never",
     "build:mac": "dotenv -e .env electron-builder --mac --publish=never",
-    "publish:all": "electron-builder -mwl --publish always",
-    "publish:linux": "electron-builder --linux --publish always",
-    "publish:win": "electron-builder --win --publish always",
-    "publish:mac": "dotenv -e .env electron-builder --mac --publish always",
-    "postinstall": "electron-builder install-app-deps"
+    "publish:all": "electron-builder -mwl --publish always"
   },
   "dependencies": {
     "electron-updater": "6.6.2",
@@ -64,7 +53,6 @@
       "!dist/**",
       "!build/**",
       "!yarn.lock",
-      "!*.backup",
       "main.js",
       "preload.js",
       "update-security.js",
@@ -79,31 +67,18 @@
       {
         "from": "data/",
         "to": "data",
-        "filter": [
-          "*.json"
-        ]
+        "filter": ["*.json"]
       }
     ],
-    "asarUnpack": [
-      "workers/**"
-    ],
+    "asarUnpack": ["workers/**"],
     "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
+      "target": ["AppImage", "deb"],
       "executableName": "topin-companion",
       "category": "Utility",
-      "maintainer": "TOPIN <support@example.com>",
-      "publish": {
-        "provider": "github"
-      }
+      "maintainer": "TOPIN <support@example.com>"
     },
     "win": {
-      "target": [
-        "nsis",
-        "zip"
-      ],
+      "target": ["nsis", "zip"],
       "publish": {
         "provider": "github"
       }
@@ -119,10 +94,7 @@
     },
     "mac": {
       "category": "public.app-category.utilities",
-      "target": [
-        "dmg",
-        "zip"
-      ],
+      "target": ["dmg", "zip"],
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "identity": null,

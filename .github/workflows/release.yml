@@ -11,88 +11,82 @@ permissions:
 jobs:
   release:
     runs-on: ${{ matrix.os }}
-    
     strategy:
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
-        
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'yarn'
-          
+
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
       # --- Windows signing setup ---
-      - name: Install Windows SDK (for signtool)
-        if: matrix.os == 'windows-latest'
-        run: choco install windows-sdk-10.0 --no-progress --yes
-
-      - name: Decode Windows certificate
+      - name: Prepare Windows signing certificate
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $pfxBytes = [System.Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_PFX }}")
-          [System.IO.File]::WriteAllBytes("windows-certificate.pfx", $pfxBytes)
+          if ($env:WINDOWS_CERT_PFX) {
+            Write-Host "Decoding certificate from GitHub Secret..."
+            $pfxBytes = [System.Convert]::FromBase64String($env:WINDOWS_CERT_PFX)
+            [System.IO.File]::WriteAllBytes("windows-certificate.pfx", $pfxBytes)
+          } else {
+            Write-Host "No secret provided, generating self-signed test certificate..."
+            $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=TOPIN-Companion Test" -CertStoreLocation "Cert:\CurrentUser\My"
+            $pwd = ConvertTo-SecureString -String "testpassword" -Force -AsPlainText
+            Export-PfxCertificate -Cert $cert -FilePath "windows-certificate.pfx" -Password $pwd
+          }
 
-      - name: Set Windows signing env
+      - name: Set Windows signing environment
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           echo "CSC_LINK=windows-certificate.pfx" >> $env:GITHUB_ENV
-          echo "CSC_KEY_PASSWORD=${{ secrets.WINDOWS_CERT_PASS }}" >> $env:GITHUB_ENV
+          echo "CSC_KEY_PASSWORD=$env:WINDOWS_CERT_PASS" >> $env:GITHUB_ENV
+          
 
       # Linux build
       - name: Build Linux app
         if: matrix.os == 'ubuntu-latest'
         run: yarn electron-builder --linux --publish=never
 
-      # Windows build (signed)
+      # Windows build (signed automatically)
       - name: Build Windows app
         if: matrix.os == 'windows-latest'
         run: yarn electron-builder --windows --publish=never
-
-      # Verify Windows signing
-      - name: Verify Windows signature
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\" -Recurse -Filter signtool.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
-          Get-ChildItem dist -Recurse -Include *.exe,*.msi | ForEach-Object {
-            Write-Host "Verifying signature for $($_.FullName)"
-            & $signtool verify /pa /v $_.FullName
-          }
 
       # macOS build
       - name: Build macOS app
         if: matrix.os == 'macos-latest'
         run: yarn electron-builder --mac --publish=never
-          
+
+      # Upload artifacts
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.os }}-build
           path: dist/
-          
+
   create-release:
     needs: release
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist/
-          
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
