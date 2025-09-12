@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('companion', {
   downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
   installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
   getAppVersion: () => ipcRenderer.invoke('app:getAppVersion'),
+  getUpdateStatus: () => ipcRenderer.invoke('app:getUpdateStatus'),
   isDevelopment: () => ipcRenderer.invoke('app:isDevelopment'),
   
   // Auto-updater event listeners
