@@ -7,6 +7,11 @@
 
 const { app, BrowserWindow, ipcMain } = require("electron");
 
+const { autoUpdater, AppUpdater } = require("electron-updater");
+
+
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = true;
 // ============================================================================
 // ELECTRON APP CONFIGURATION & PERFORMANCE OPTIMIZATION
 // ============================================================================
@@ -498,7 +503,9 @@ app.whenReady().then(() => {
     setTimeout(() => {
       try { startAutoScanWorker(30000); } catch {}  // 30-second intervals
     }, 5000);
-  } catch {}
+  } catch { }
+  
+  autoUpdater.checkForUpdates();
 });
 
 // ============================================================================
