@@ -39,6 +39,13 @@ const fs = require("fs");                                  // File system operat
 const { exec } = require("child_process");                 // Execute system commands
 
 // ============================================================================
+// APP VERSION LOADING
+// ============================================================================
+// Load application version from package.json for display in UI
+const packageJson = require("./package.json");
+const appVersion = packageJson.version;
+
+// ============================================================================
 // SECURITY SERVICES
 // ============================================================================
 const SecurityService = require("./security/SecurityService");     // Core security scanning
@@ -1854,6 +1861,22 @@ ipcMain.handle("app:getNotificationLoggingStatus", async () => {
   try {
     const enabled = !!notificationService.getLoggingStatus();
     return { ok: true, enabled };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// ============================================================================
+// IPC HANDLERS - APP VERSION
+// ============================================================================
+
+/**
+ * Get application version
+ * Returns the current application version from package.json
+ */
+ipcMain.handle("app:getVersion", async () => {
+  try {
+    return { ok: true, version: appVersion };
   } catch (e) {
     return { ok: false, error: String(e) };
   }

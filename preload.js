@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('companion', {
   getLoggingStatus: () => ipcRenderer.invoke('app:getLoggingStatus'),
   getActiveSharingTabs: () => ipcRenderer.invoke('app:listActiveSharingTabs'),
   runExamModeCheck: (options) => ipcRenderer.invoke('app:runExamModeCheck', options),
+  getVersion: () => ipcRenderer.invoke('app:getVersion'),
   onWebSocketMessage: (handler) => {
     const listener = (_evt, message) => handler(message);
     ipcRenderer.on('websocket:message', listener);

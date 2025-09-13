@@ -4,6 +4,7 @@ html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:
 .app-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #1b2747;background:rgba(9,14,30,.6);backdrop-filter:blur(8px);position:sticky;top:0;z-index:10}
 .title{display:flex;gap:10px;align-items:center}
 .logo{width:24px;height:24px;opacity:.9}
+.version-display{font-size:12px;color:var(--muted);opacity:.8;margin-left:8px;padding:2px 6px;background:rgba(159,176,208,0.1);border-radius:4px;border:1px solid rgba(159,176,208,0.2)}
 .container{max-width:1100px;margin:24px auto;padding:0 16px;display:flex;flex-direction:column;gap:20px}
 .card{background:var(--card);border:1px solid #1b2747;border-radius:12px;padding:16px 16px 18px}
 .row{display:flex;align-items:center;gap:12px}

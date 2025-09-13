@@ -28,6 +28,35 @@ const updateDownloadBtn = document.getElementById('updateDownloadBtn'); // Downl
 const updateInstallBtn = document.getElementById('updateInstallBtn');   // Install button
 const updateLaterBtn = document.getElementById('updateLaterBtn');    // Later button
 const mainContent = document.getElementById('mainContent');          // Main app content
+const versionDisplayEl = document.getElementById('versionDisplay');  // Version display element
+
+// ============================================================================
+// VERSION DISPLAY FUNCTIONS
+// ============================================================================
+
+/**
+ * Loads and displays the application version in the UI
+ * Fetches version from main process and updates the version display element
+ */
+async function loadAppVersion() {
+  try {
+    if (!versionDisplayEl) return;
+    
+    const result = await window.companion.getVersion();
+    if (result && result.ok && result.version) {
+      versionDisplayEl.textContent = `v${result.version}`;
+    } else {
+      // Fallback to default version if API fails
+      versionDisplayEl.textContent = 'v1.0.0';
+    }
+  } catch (error) {
+    console.warn('Failed to load app version:', error);
+    // Fallback to default version on error
+    if (versionDisplayEl) {
+      versionDisplayEl.textContent = 'v1.0.0';
+    }
+  }
+}
 
 // ============================================================================
 // UI STATUS DISPLAY FUNCTIONS
@@ -586,6 +615,12 @@ updateLaterBtn.addEventListener('click', handleSkipUpdate);
   // ============================================================================
   globalStatusEl.textContent = 'Idle';
   globalHintEl.textContent = 'Click Scan Now to run notifications check and system scan.';
+  
+  // ============================================================================
+  // LOAD APPLICATION VERSION
+  // ============================================================================
+  // Load and display the current application version
+  try { await loadAppVersion(); } catch {}
   
   // ============================================================================
   // PERMISSION CHECKS
