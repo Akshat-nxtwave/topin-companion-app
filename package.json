@@ -1,6 +1,7 @@
 {
   "name": "companion-topin",
-  "version": "1.0.1",
+  "version": "0.1.0",
+  
   "description": "Companion Topin Application (Electron v28)",
   "main": "main.js",
   "author": {
@@ -30,6 +31,7 @@
     "dist:win": "electron-builder --win --publish never",
     "build:win:zip": "electron-builder --win zip --publish never",
     "build:mac": "dotenv -e .env electron-builder --mac --publish=never",
+    "build:mac:signed": "CSC_IDENTITY=topin-certificate CSC_NOTARIZE=false CSC_DMG_SIGN=true CSC_ZIP_SIGN=true electron-builder --mac --publish=never",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -101,14 +103,19 @@
         "dmg",
         "zip"
       ],
-      "hardenedRuntime": true,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "hardenedRuntime": false,
       "gatekeeperAssess": false,
+      "identity": "topin-certificate",
+      "notarize": false,
       "extendInfo": {
         "NSAppleEventsUsageDescription": "This app uses Apple Events to open system settings for permissions.",
         "LSApplicationCategoryType": "public.app-category.utilities"
       }
-    }
+    },
+    "dmg": {
+      "sign": true
+    },
+    "forceCodeSigning": true
   }
+  
 }

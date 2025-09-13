@@ -12,11 +12,14 @@ const { autoUpdater, AppUpdater } = require("electron-updater");
 // ============================================================================
 // AUTO-UPDATE CONFIGURATION
 // ============================================================================
-autoUpdater.autoDownload = false;
-autoUpdater.autoInstallOnAppQuit = true;
-
-// Configure update checking
-autoUpdater.checkForUpdatesAndNotify = false; // We'll handle this manually
+// Only configure auto-updater if app is packaged (production)
+if (app.isPackaged) {
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.checkForUpdatesAndNotify = false; // We'll handle this manually
+} else {
+  console.log('Auto-updater disabled in development mode');
+}
 // ============================================================================
 // ELECTRON APP CONFIGURATION & PERFORMANCE OPTIMIZATION
 // ============================================================================
@@ -521,13 +524,22 @@ app.whenReady().then(() => {
   // AUTO-UPDATE INITIALIZATION
   // ============================================================================
   // Start checking for updates immediately when app is ready
-  try {
-    autoUpdater.checkForUpdates();
-  } catch (error) {
-    console.warn("Failed to check for updates:", error);
-    // If update check fails, show main content
+  // Skip update check in development mode to avoid code signature issues
+  if (app.isPackaged) {
+    try {
+      autoUpdater.checkForUpdates();
+    } catch (error) {
+      console.warn("Failed to check for updates:", error);
+      // If update check fails, show main content
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update:error', { message: 'Update check failed' });
+      }
+    }
+  } else {
+    console.log('Skipping update check in development mode');
+    // In development, immediately show that no update is available
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('update:error', { message: 'Update check failed' });
+      mainWindow.webContents.send('update:not-available');
     }
   }
 });
@@ -617,6 +629,9 @@ autoUpdater.on('error', (error) => {
  * Download update handler
  */
 ipcMain.handle('update:download', async () => {
+  if (!app.isPackaged) {
+    return { ok: false, error: 'Auto-updater not available in development mode' };
+  }
   try {
     autoUpdater.downloadUpdate();
     return { ok: true };
@@ -629,6 +644,9 @@ ipcMain.handle('update:download', async () => {
  * Install update handler
  */
 ipcMain.handle('update:install', async () => {
+  if (!app.isPackaged) {
+    return { ok: false, error: 'Auto-updater not available in development mode' };
+  }
   try {
     autoUpdater.quitAndInstall();
     return { ok: true };

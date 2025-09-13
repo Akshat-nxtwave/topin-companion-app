@@ -40,13 +40,25 @@ const versionDisplayEl = document.getElementById('versionDisplay');  // Version 
  */
 async function loadAppVersion() {
   try {
-    if (!versionDisplayEl) return;
+    if (!versionDisplayEl) {
+      console.warn('Version display element not found');
+      return;
+    }
+    
+    // Check if companion API is available
+    if (!window.companion || !window.companion.getVersion) {
+      console.warn('Companion API not available, using fallback version');
+      versionDisplayEl.textContent = 'v1.0.0';
+      return;
+    }
     
     const result = await window.companion.getVersion();
     if (result && result.ok && result.version) {
       versionDisplayEl.textContent = `v${result.version}`;
+      console.log('App version loaded:', result.version);
     } else {
       // Fallback to default version if API fails
+      console.warn('Version API returned invalid result:', result);
       versionDisplayEl.textContent = 'v1.0.0';
     }
   } catch (error) {
@@ -619,8 +631,10 @@ updateLaterBtn.addEventListener('click', handleSkipUpdate);
   // ============================================================================
   // LOAD APPLICATION VERSION
   // ============================================================================
-  // Load and display the current application version
-  try { await loadAppVersion(); } catch {}
+  // Load and display the current application version after DOM is ready
+  setTimeout(async () => {
+    try { await loadAppVersion(); } catch {}
+  }, 100);
   
   // ============================================================================
   // PERMISSION CHECKS
