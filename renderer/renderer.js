@@ -18,6 +18,17 @@ const suspiciousListEl = document.getElementById('suspiciousList');  // Containe
 const notifAuditEl = document.getElementById('notifAudit');          // Container for notification audit results
 const scanBtnDefaultText = scanBtn.textContent;                     // Store original button text
 
+// Update modal elements
+const updateModal = document.getElementById('updateModal');          // Update modal container
+const updateTitle = document.getElementById('updateTitle');          // Update modal title
+const updateMessage = document.getElementById('updateMessage');      // Update status message
+const updateStatus = document.getElementById('updateStatus');        // Update status container
+const updateActions = document.getElementById('updateActions');      // Update action buttons
+const updateDownloadBtn = document.getElementById('updateDownloadBtn'); // Download button
+const updateInstallBtn = document.getElementById('updateInstallBtn');   // Install button
+const updateLaterBtn = document.getElementById('updateLaterBtn');    // Later button
+const mainContent = document.getElementById('mainContent');          // Main app content
+
 // ============================================================================
 // UI STATUS DISPLAY FUNCTIONS
 // ============================================================================
@@ -93,6 +104,7 @@ async function setFocusStatus(){
 // ============================================================================
 let isChecking = false;              // Prevents multiple simultaneous scans
 let unsubscribeAutoScan = null;      // Auto-scan subscription cleanup function
+let updateState = 'checking';        // Current update state: checking, available, downloading, downloaded, error, complete
 
 // ============================================================================
 // THREAT DISPLAY UTILITY FUNCTIONS
@@ -176,6 +188,127 @@ function normalizeAppDisplay(name){
 function severityRank(s){
   const m = { critical: 4, high: 3, medium: 2, low: 1 };
   return m[String(s || '').toLowerCase()] || 0;
+}
+
+// ============================================================================
+// UPDATE MODAL MANAGEMENT FUNCTIONS
+// ============================================================================
+
+/**
+ * Show the update modal and hide main content
+ */
+function showUpdateModal() {
+  updateModal.style.display = 'flex';
+  mainContent.style.display = 'none';
+}
+
+/**
+ * Hide the update modal and show main content
+ */
+function hideUpdateModal() {
+  updateModal.style.display = 'none';
+  mainContent.style.display = 'block';
+}
+
+/**
+ * Update the modal UI based on current state
+ * @param {string} state - Current update state
+ * @param {Object} data - Additional data for the state
+ */
+function updateModalUI(state, data = {}) {
+  updateState = state;
+  
+  switch (state) {
+    case 'checking':
+      updateTitle.textContent = 'Checking for Updates';
+      updateMessage.textContent = 'Checking for updates...';
+      updateStatus.style.display = 'block';
+      updateActions.style.display = 'none';
+      break;
+      
+    case 'available':
+      updateTitle.textContent = 'Update Available';
+      updateMessage.textContent = `Version ${data.version || 'latest'} is available. Would you like to download it?`;
+      updateStatus.style.display = 'block';
+      updateActions.style.display = 'flex';
+      updateDownloadBtn.style.display = 'inline-block';
+      updateInstallBtn.style.display = 'none';
+      updateLaterBtn.style.display = 'inline-block';
+      break;
+      
+    case 'downloading':
+      updateTitle.textContent = 'Downloading Update';
+      updateMessage.textContent = `Downloading update... ${Math.round(data.percent || 0)}%`;
+      updateStatus.style.display = 'block';
+      updateActions.style.display = 'none';
+      break;
+      
+    case 'downloaded':
+      updateTitle.textContent = 'Update Ready';
+      updateMessage.textContent = 'Update downloaded successfully. The app will restart to install the update.';
+      updateStatus.style.display = 'block';
+      updateActions.style.display = 'flex';
+      updateDownloadBtn.style.display = 'none';
+      updateInstallBtn.style.display = 'inline-block';
+      updateLaterBtn.style.display = 'inline-block';
+      break;
+      
+    case 'error':
+      updateTitle.textContent = 'Update Error';
+      updateMessage.textContent = data.message || 'An error occurred while checking for updates.';
+      updateStatus.style.display = 'block';
+      updateActions.style.display = 'flex';
+      updateDownloadBtn.style.display = 'none';
+      updateInstallBtn.style.display = 'none';
+      updateLaterBtn.style.display = 'inline-block';
+      break;
+      
+    case 'complete':
+      hideUpdateModal();
+      break;
+  }
+}
+
+/**
+ * Handle download update button click
+ */
+async function handleDownloadUpdate() {
+  try {
+    updateModalUI('downloading');
+    const result = await window.companion.downloadUpdate();
+    if (!result.ok) {
+      updateModalUI('error', { message: result.error || 'Download failed' });
+    }
+  } catch (error) {
+    updateModalUI('error', { message: error.message || 'Download failed' });
+  }
+}
+
+/**
+ * Handle install update button click
+ */
+async function handleInstallUpdate() {
+  try {
+    const result = await window.companion.installUpdate();
+    if (!result.ok) {
+      updateModalUI('error', { message: result.error || 'Installation failed' });
+    }
+  } catch (error) {
+    updateModalUI('error', { message: error.message || 'Installation failed' });
+  }
+}
+
+/**
+ * Handle skip update button click
+ */
+async function handleSkipUpdate() {
+  try {
+    await window.companion.skipUpdate();
+    updateModalUI('complete');
+  } catch (error) {
+    console.error('Error skipping update:', error);
+    updateModalUI('complete'); // Show main content anyway
+  }
 }
 
 // ============================================================================
@@ -399,6 +532,11 @@ async function runSystemCheck(){
 // Bind scan button click event
 scanBtn.addEventListener('click', runSystemCheck);
 
+// Bind update modal button events
+updateDownloadBtn.addEventListener('click', handleDownloadUpdate);
+updateInstallBtn.addEventListener('click', handleInstallUpdate);
+updateLaterBtn.addEventListener('click', handleSkipUpdate);
+
 /**
  * Application initialization function
  * Sets up initial UI state, checks permissions, and subscribes to auto-scan events
@@ -406,7 +544,45 @@ scanBtn.addEventListener('click', runSystemCheck);
  */
 (async function init(){
   // ============================================================================
-  // INITIAL UI STATE
+  // INITIAL UI STATE - SHOW UPDATE MODAL FIRST
+  // ============================================================================
+  showUpdateModal();
+  updateModalUI('checking');
+  
+  // ============================================================================
+  // UPDATE EVENT LISTENERS
+  // ============================================================================
+  // Listen for update events from main process
+  window.companion.onUpdateChecking(() => {
+    updateModalUI('checking');
+  });
+  
+  window.companion.onUpdateAvailable((data) => {
+    updateModalUI('available', data);
+  });
+  
+  window.companion.onUpdateNotAvailable(() => {
+    updateModalUI('complete');
+  });
+  
+  window.companion.onUpdateDownloadProgress((data) => {
+    updateModalUI('downloading', data);
+  });
+  
+  window.companion.onUpdateDownloaded((data) => {
+    updateModalUI('downloaded', data);
+  });
+  
+  window.companion.onUpdateError((data) => {
+    updateModalUI('error', data);
+  });
+  
+  window.companion.onUpdateSkip(() => {
+    updateModalUI('complete');
+  });
+  
+  // ============================================================================
+  // INITIAL UI STATE (AFTER UPDATE CHECK)
   // ============================================================================
   globalStatusEl.textContent = 'Idle';
   globalHintEl.textContent = 'Click Scan Now to run notifications check and system scan.';

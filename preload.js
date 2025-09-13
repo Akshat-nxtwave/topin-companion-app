@@ -42,5 +42,47 @@ contextBridge.exposeInMainWorld('companion', {
     const listener = (_evt, message) => handler(message);
     ipcRenderer.on('websocket:message', listener);
     return () => { ipcRenderer.removeListener('websocket:message', listener); };
+  },
+  
+  // Auto-update functions
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  skipUpdate: () => ipcRenderer.invoke('update:skip'),
+  
+  // Update event listeners
+  onUpdateChecking: (handler) => {
+    const listener = (_evt) => handler();
+    ipcRenderer.on('update:checking', listener);
+    return () => { ipcRenderer.removeListener('update:checking', listener); };
+  },
+  onUpdateAvailable: (handler) => {
+    const listener = (_evt, data) => handler(data);
+    ipcRenderer.on('update:available', listener);
+    return () => { ipcRenderer.removeListener('update:available', listener); };
+  },
+  onUpdateNotAvailable: (handler) => {
+    const listener = (_evt) => handler();
+    ipcRenderer.on('update:not-available', listener);
+    return () => { ipcRenderer.removeListener('update:not-available', listener); };
+  },
+  onUpdateDownloadProgress: (handler) => {
+    const listener = (_evt, data) => handler(data);
+    ipcRenderer.on('update:download-progress', listener);
+    return () => { ipcRenderer.removeListener('update:download-progress', listener); };
+  },
+  onUpdateDownloaded: (handler) => {
+    const listener = (_evt, data) => handler(data);
+    ipcRenderer.on('update:downloaded', listener);
+    return () => { ipcRenderer.removeListener('update:downloaded', listener); };
+  },
+  onUpdateError: (handler) => {
+    const listener = (_evt, data) => handler(data);
+    ipcRenderer.on('update:error', listener);
+    return () => { ipcRenderer.removeListener('update:error', listener); };
+  },
+  onUpdateSkip: (handler) => {
+    const listener = (_evt) => handler();
+    ipcRenderer.on('update:skip', listener);
+    return () => { ipcRenderer.removeListener('update:skip', listener); };
   }
 }); 

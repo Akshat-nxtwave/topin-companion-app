@@ -17,7 +17,27 @@
     </div>
   </header>
 
-  <main class="container">
+  <!-- Update Modal -->
+  <div id="updateModal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="updateTitle">Checking for Updates</h2>
+      </div>
+      <div class="modal-body">
+        <div id="updateStatus" class="update-status">
+          <div class="spinner"></div>
+          <p id="updateMessage">Checking for updates...</p>
+        </div>
+        <div id="updateActions" class="update-actions" style="display: none;">
+          <button id="updateDownloadBtn" class="btn primary" style="display: none;">Download Update</button>
+          <button id="updateInstallBtn" class="btn primary" style="display: none;">Install & Restart</button>
+          <button id="updateLaterBtn" class="btn secondary" style="display: none;">Later</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <main class="container" id="mainContent" style="display: none;">
     <section class="card">
       <h2>System Check</h2>
       <div id="globalStatus" class="badge">Idle</div>

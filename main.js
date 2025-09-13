@@ -9,9 +9,14 @@ const { app, BrowserWindow, ipcMain } = require("electron");
 
 const { autoUpdater, AppUpdater } = require("electron-updater");
 
-
+// ============================================================================
+// AUTO-UPDATE CONFIGURATION
+// ============================================================================
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = true;
+
+// Configure update checking
+autoUpdater.checkForUpdatesAndNotify = false; // We'll handle this manually
 // ============================================================================
 // ELECTRON APP CONFIGURATION & PERFORMANCE OPTIMIZATION
 // ============================================================================
@@ -505,7 +510,139 @@ app.whenReady().then(() => {
     }, 5000);
   } catch { }
   
-  autoUpdater.checkForUpdates();
+  // ============================================================================
+  // AUTO-UPDATE INITIALIZATION
+  // ============================================================================
+  // Start checking for updates immediately when app is ready
+  try {
+    autoUpdater.checkForUpdates();
+  } catch (error) {
+    console.warn("Failed to check for updates:", error);
+    // If update check fails, show main content
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update:error', { message: 'Update check failed' });
+    }
+  }
+});
+
+// ============================================================================
+// AUTO-UPDATE EVENT HANDLERS
+// ============================================================================
+
+/**
+ * Handle update checking started
+ */
+autoUpdater.on('checking-for-update', () => {
+  console.log('Checking for update...');
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update:checking');
+  }
+});
+
+/**
+ * Handle update available
+ */
+autoUpdater.on('update-available', (info) => {
+  console.log('Update available:', info);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update:available', {
+      version: info.version,
+      releaseNotes: info.releaseNotes,
+      releaseDate: info.releaseDate
+    });
+  }
+});
+
+/**
+ * Handle update not available
+ */
+autoUpdater.on('update-not-available', (info) => {
+  console.log('Update not available:', info);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update:not-available');
+  }
+});
+
+/**
+ * Handle update download progress
+ */
+autoUpdater.on('download-progress', (progressObj) => {
+  console.log('Download progress:', progressObj);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update:download-progress', {
+      percent: progressObj.percent,
+      transferred: progressObj.transferred,
+      total: progressObj.total
+    });
+  }
+});
+
+/**
+ * Handle update downloaded
+ */
+autoUpdater.on('update-downloaded', (info) => {
+  console.log('Update downloaded:', info);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update:downloaded', {
+      version: info.version,
+      releaseNotes: info.releaseNotes
+    });
+  }
+});
+
+/**
+ * Handle update error
+ */
+autoUpdater.on('error', (error) => {
+  console.error('Update error:', error);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update:error', {
+      message: error.message || 'Update failed'
+    });
+  }
+});
+
+// ============================================================================
+// IPC HANDLERS - AUTO-UPDATE
+// ============================================================================
+
+/**
+ * Download update handler
+ */
+ipcMain.handle('update:download', async () => {
+  try {
+    autoUpdater.downloadUpdate();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+/**
+ * Install update handler
+ */
+ipcMain.handle('update:install', async () => {
+  try {
+    autoUpdater.quitAndInstall();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+/**
+ * Skip update handler
+ */
+ipcMain.handle('update:skip', async () => {
+  try {
+    // Just show the main content
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update:skip');
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
 });
 
 // ============================================================================
